@@ -1,0 +1,588 @@
+.work-shell {
+  --work-chrome-h: 52px;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mo-canvas);
+  position: relative;
+}
+
+.work-sidebar-col {
+  width: 248px;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--mo-soft);
+  border-right: 1px solid var(--mo-border);
+  transition: width 0.22s ease, border-color 0.22s ease;
+  position: relative;
+  z-index: 30;
+  -webkit-app-region: no-drag;
+}
+
+.work-shell.is-collapsed .work-sidebar-col {
+  width: 0;
+  border-right-color: transparent;
+  pointer-events: none;
+}
+
+.work-aside-chrome {
+  height: var(--work-chrome-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 0;
+  background: transparent;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.work-mac-traffic {
+  width: 78px;
+  height: 100%;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+  pointer-events: none;
+}
+
+.work-chrome-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.work-chrome-btn {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #4b5563;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.work-chrome-btn:hover {
+  background: #eceef2;
+  color: #111827;
+}
+
+.work-chrome-btn.is-on {
+  color: var(--mo-primary);
+  background: var(--mo-primary-soft);
+}
+
+.work-chrome-drag {
+  flex: 1;
+  height: 100%;
+  min-width: 8px;
+  -webkit-app-region: drag;
+}
+
+.work-main-chrome {
+  height: var(--work-chrome-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px 0 0;
+  background: var(--mo-bg);
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.work-aside {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  -webkit-app-region: no-drag;
+}
+
+.work-aside-mid {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 2;
+}
+
+.work-brand {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 8px 12px 12px;
+  color: var(--mo-primary);
+  flex-shrink: 0;
+}
+
+.work-cta-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 8px;
+  padding: 10px 12px;
+  border: 1px solid #e0e7ff;
+  border-radius: 12px;
+  background: #fff;
+  color: #111827;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(79, 70, 229, 0.06);
+}
+
+.work-cta-btn:hover {
+  border-color: #c7d2fe;
+  background: var(--mo-primary-soft);
+  color: var(--mo-primary);
+}
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 4px 14px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--mo-primary-soft);
+  -webkit-app-region: no-drag;
+}
+
+.mode-switch button {
+  border: none;
+  border-radius: 9px;
+  padding: 9px 8px;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.mode-switch button.on {
+  background: #fff;
+  color: var(--mo-primary);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+.work-primary-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.work-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  color: #374151;
+  text-align: left;
+}
+
+.work-nav-btn:hover,
+.work-nav-btn.active {
+  background: var(--mo-primary-soft);
+  color: var(--mo-primary);
+}
+
+.work-nav-spacer {
+  display: none;
+}
+
+.work-side-footer-wrap {
+  position: relative;
+  flex-shrink: 0;
+  margin-top: auto;
+}
+
+.work-side-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  margin-top: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.work-account-mini {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+}
+
+.work-account-mini strong {
+  display: block;
+  font-size: 12px;
+  color: #111827;
+}
+
+.work-account-mini span {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.work-account-status {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+
+.work-account-status.active {
+  color: #10b981;
+}
+
+.work-settings-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.work-settings-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.work-account-popover {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 52px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+  padding: 6px;
+  z-index: 20;
+}
+
+.work-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: #374151;
+}
+
+.work-menu-item.danger {
+  color: #dc2626;
+}
+
+.work-menu-item:hover {
+  background: #f8fafc;
+}
+
+.work-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: hidden;
+  background: var(--mo-bg);
+}
+
+.work-main-slot {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.work-main-slot > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+
+.work-records-label {
+  padding: 0 8px 6px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-top: 12px;
+}
+
+.work-record-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.work-record-item:hover,
+.work-record-item.active {
+  background: var(--mo-primary-soft);
+}
+
+.work-record-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c7d2fe;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.work-record-item.active .work-record-dot {
+  background: var(--mo-primary);
+}
+
+.work-record-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.work-record-main strong {
+  font-size: 12px;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-record-main small {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.work-record-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.nav-workspace {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 2px 0 10px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.nav-workspace:hover {
+  background: #eceef2;
+}
+
+.nav-workspace-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #111827;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.nav-workspace strong {
+  display: block;
+  font-size: 13px;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-workspace small {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.nav-workspace-caret {
+  margin-left: auto;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.nav-group {
+  padding: 4px 0 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.nav-group:first-of-type {
+  border-top: none;
+}
+
+.nav-group-h {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-group-h:hover {
+  color: #6b7280;
+}
+
+.nav-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transition: transform 0.15s ease;
+}
+
+.nav-caret.is-closed {
+  transform: rotate(-90deg);
+}
+
+.nav-item,
+.nav-child {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+  color: #374151;
+  font-size: 13px;
+}
+
+.nav-item:hover,
+.nav-child:hover {
+  background: #eceef2;
+}
+
+.nav-item.on,
+.nav-child.on {
+  background: var(--mo-primary-soft);
+  color: var(--mo-primary);
+  font-weight: 600;
+}
+
+.nav-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.nav-item-caret {
+  margin-left: auto;
+  color: #c4c9d2;
+}
+
+.nav-children {
+  padding: 0 0 4px 32px;
+}
+
+.work-win-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  height: var(--work-chrome-h);
+  z-index: 30;
+  -webkit-app-region: no-drag;
+}
+
+.work-win-controls .control-btn {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #666;
+}
+
+.work-win-controls .control-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.work-win-controls .control-btn.close:hover {
+  background: #e81123;
+  color: #fff;
+}

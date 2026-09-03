@@ -1,0 +1,97 @@
+name: Release Studio
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      nexus_url:
+        description: "VITE_NEXUS_URL (default http://mino.local:10104)"
+        required: false
+        default: "http://mino.local:10104"
+
+# Production tag builds default to http://mino.local:10104 (Nexus mDNS).
+# Override with repository variable or secret VITE_NEXUS_URL.
+# .npmrc already sets electron_mirror (npmmirror) and allow-scripts for electron.
+# Signing is off (package.json mac.identity = null). Do not force CSC_* certs.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Resolve build env
+        id: env
+        shell: bash
+        env:
+          INPUT_NEXUS: ${{ github.event.inputs.nexus_url }}
+          VAR_NEXUS: ${{ vars.VITE_NEXUS_URL }}
+          SECRET_NEXUS: ${{ secrets.VITE_NEXUS_URL }}
+          VAR_MANIFEST: ${{ vars.VITE_SCOUT_MANIFEST_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NEXUS="${INPUT_NEXUS:-${VAR_NEXUS:-http://mino.local:10104}}"
+          else
+            NEXUS="${VAR_NEXUS:-${SECRET_NEXUS:-http://mino.local:10104}}"
+          fi
+          MANIFEST="${VAR_MANIFEST:-https://github.com/${GITHUB_REPOSITORY_OWNER}/MinoScout/releases/latest/download/manifest.json}"
+          echo "nexus_url=${NEXUS}" >> "$GITHUB_OUTPUT"
+          echo "manifest_url=${MANIFEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          VITE_NEXUS_URL: ${{ steps.env.outputs.nexus_url }}
+          VITE_SCOUT_MANIFEST_URL: ${{ steps.env.outputs.manifest_url }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-${{ matrix.os }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.yml
+            dist/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
