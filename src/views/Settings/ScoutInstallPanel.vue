@@ -9,9 +9,10 @@ import {
   listRuntimeNodes,
   parseRuntimeNodes,
 } from '@/api/runtime'
-import { nexusOrigin, scoutManifestUrl } from '@/utils/config'
-import { scoutReleasesPageUrl } from '@/utils/scoutRelease'
+import { canInstallLocalScout, nexusOrigin, scoutManifestUrl } from '@/utils/config'
+import { packedArchForOs, scoutReleasesPageUrl } from '@/utils/scoutRelease'
 import { openExternalUrl } from '@/utils/openExternal'
+import { ipcPayload } from '@/utils/ipcPayload'
 import './settings-ui.css'
 
 const installing = ref(false)
@@ -31,6 +32,7 @@ const step = ref('')
 
 const platform = ref(detectClientPlatform())
 const origin = computed(() => nexusOrigin())
+const canInstall = computed(() => canInstallLocalScout())
 const manifestUrl = computed(() => scoutManifestUrl())
 const releasesPage = computed(() => scoutReleasesPageUrl(manifestUrl.value))
 const openReleases = (e) => {
@@ -65,8 +67,8 @@ const refreshRelease = async () => {
   releaseMissing.value = false
   releaseError.value = ''
   try {
-    const res = await getScoutLatestRelease(platform.value)
-    release.value = res?.data || res || null
+    const res = await getScoutLatestRelease({ os: platform.value.os })
+    release.value = ipcPayload(res?.data || res || null)
     if (!release.value?.url) releaseMissing.value = true
   } catch (e) {
     release.value = null
@@ -96,6 +98,9 @@ const refresh = async () => {
 
 const onProgress = (payload) => {
   progress.value = payload
+  // scoutSetup 的进度自带阶段名（含「下载安装包（app 层）」这类分层信息），
+  // 比这里手写的 step 更细，来了就用它。
+  if (installing.value && payload?.label) step.value = payload.label
 }
 
 const stopLocal = async () => {
@@ -150,8 +155,9 @@ const waitForNode = async () => {
 }
 
 const install = async () => {
-  if (!window.electronAPI?.scoutDownload) {
-    ElMessage.warning('请在 Mino Studio 桌面端安装执行器。浏览器不能写本机配置、也不能唤起系统安装程序。')
+  const api = window.electronAPI
+  if (typeof api?.scoutSetup !== 'function') {
+    ElMessage.error('当前不是 Mino Studio 桌面窗口，无法安装 Scout。请运行 npm run dev 打开应用后再点下载。')
     return
   }
   if (!release.value?.url) {
@@ -175,39 +181,39 @@ const install = async () => {
       if (!apiUnavailable(e)) throw e
     }
 
-    step.value = '写入 Scout 配置'
-    const written = await window.electronAPI.scoutWriteConfig({
-      nexus_url: origin.value,
-      token,
-      version: release.value.version || '',
-    })
-    if (!written?.ok) throw new Error(written?.error || '写入配置失败')
-
-    step.value = '下载安装包'
+    // 走 scoutSetup（与 Scout 节点页同一条路径）而不是 scoutDownload + scoutInstall：
+    // 那条老的两步流程只会下合并包，永远拿不到分层增量。scoutSetup 会比对本机
+    // bin/layers.txt，只下指纹变了的层 —— 只改代码的更新是 90 KB 而非 439 MB。
+    // 它自己写配置并注册启动项，所以这里不再单独 scoutWriteConfig。
+    step.value = '下载并安装'
     const filename = release.value.filename
       || String(release.value.url).split('?')[0].split('/').pop()
-      || `scout-${platform.value.os}-${platform.value.arch}`
-    const downloaded = await window.electronAPI.scoutDownload({
+      || `scout-${platform.value.os}-${packedArchForOs(platform.value.os)}`
+    const res = await api.scoutSetup(ipcPayload({
       url: release.value.url,
       sha256: release.value.sha256 || '',
       filename,
-    })
-    if (!downloaded?.ok) throw new Error(downloaded?.error || '下载失败')
+      nexus_url: origin.value,
+      token,
+      version: release.value.version || '',
+      bytes: release.value.bytes || 0,
+      layers: release.value.layers || null,
+    }))
+    if (!res?.ok) throw new Error(res?.error || '安装失败')
 
-    const isZip = (release.value.installer === 'zip')
-      || String(filename).toLowerCase().endsWith('.zip')
-    step.value = isZip ? '解压并注册本机启动项' : '打开系统安装程序'
-    const opened = await window.electronAPI.scoutInstall({ filePath: downloaded.path })
-    if (!opened?.ok) throw new Error(opened?.error || '无法打开安装包')
+    if (res.mode === 'up-to-date') {
+      ElMessage.success('本机 Scout 已是最新，无需下载。')
+    } else if (res.mode === 'layers' && res.layers?.length) {
+      ElMessage.success(`已增量更新 ${res.layers.join(' + ')} 层。Scout 会自己连 Nexus。`)
+    } else {
+      ElMessage.success('已安装并注册本机启动项。Scout 会自己连 Nexus。')
+    }
 
-    ElMessage.success(opened.launched
-      ? '已注册本机启动项。Scout 会自己连 Nexus。'
-      : '已打开安装包。装完后 Scout 会自己连 Nexus。')
     step.value = '等待节点注册'
     const seen = await waitForNode()
     await refreshLocal()
     if (seen) ElMessage.success('执行器已出现在节点列表')
-    else ElMessage.info('安装程序已打开。若列表仍为空，装完后点刷新。')
+    else ElMessage.info('已安装。若列表仍为空，稍后点刷新。')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '安装失败')
   } finally {
@@ -220,14 +226,12 @@ const install = async () => {
 let stopProgress = null
 
 onMounted(async () => {
-  stopProgress = window.electronAPI?.onScoutDownloadProgress?.(onProgress) || null
+  // 订阅 setup 的进度，不再是 download 的 —— install() 走的是 scoutSetup。
+  stopProgress = window.electronAPI?.onScoutSetupProgress?.(onProgress) || null
   try {
     const st = await window.electronAPI?.getRuntimeStatus?.()
     if (st?.electron?.platform) {
-      platform.value = {
-        os: st.electron.platform,
-        arch: st.electron.arch === 'arm64' ? 'arm64' : 'x64',
-      }
+      platform.value = { os: st.electron.platform, arch: packedArchForOs(st.electron.platform) }
     }
   } catch { /* UA fallback already set */ }
   refresh()
@@ -243,14 +247,20 @@ onUnmounted(() => {
     <div class="settings-kicker">本机执行器</div>
     <h3>Mino Scout</h3>
     <p class="settings-page-desc">{{ statusLine }}</p>
-    <p class="meta">Nexus <code>{{ origin }}</code> · {{ platform.os }}/{{ platform.arch }} · 已注册 {{ nodeCount }} 个节点</p>
+    <p class="meta">Nexus <code>{{ origin }}</code> · {{ platform.os }}-{{ platform.arch }} · 已注册 {{ nodeCount }} 个节点</p>
     <p v-if="localScout.configPath" class="meta">配置：{{ localScout.configPath }}</p>
     <p v-if="localScout.scoutId" class="meta">Scout ID <code>{{ localScout.scoutId }}</code></p>
-    <p v-if="release?.version" class="meta">最新包 {{ release.version }}</p>
+    <p v-if="localScout.version" class="meta">本机 v{{ localScout.version }}</p>
+    <p v-if="release?.version" class="meta">最新包 v{{ release.version }}</p>
     <p v-else-if="releaseMissing" class="meta warn">
       还没有可用的 GitHub 安装包（<code>releases/latest/download/manifest.json</code>）。
       <a v-if="releasesPage" :href="releasesPage" target="_blank" rel="noopener" @click="openReleases">打开发布页</a>
     </p>
+    <el-progress
+      v-if="installing && progress?.percent != null"
+      :percentage="Math.max(0, Math.min(100, Math.round(Number(progress.percent) || 0)))"
+      :stroke-width="10"
+    />
     <p v-if="(installing || starting || stopping) && step" class="meta">{{ step }}<template v-if="progress?.percent != null"> · {{ progress.percent }}%</template></p>
     <div class="actions">
       <button
@@ -271,10 +281,11 @@ onUnmounted(() => {
       >
         <span>{{ stopping ? '停止中…' : '停止本机执行器' }}</span>
       </button>
-      <button type="button" class="settings-action-pill" :disabled="installing || starting" @click="install">
+      <button v-if="canInstall" type="button" class="settings-action-pill" :disabled="installing || starting" @click="install">
         <el-icon><Download /></el-icon>
-        <span>{{ installing ? '安装中…' : (localScout.installed ? '重新安装执行器' : '从 GitHub 下载并安装') }}</span>
+        <span>{{ installing ? (progress?.percent != null ? `下载中 ${progress.percent}%` : 'Studio 正在安装 Scout…') : (localScout.installed ? (release?.version && String(localScout.version || '') !== String(release.version) ? `更新到 v${release.version}` : '重新安装执行器') : '从 GitHub 下载并安装') }}</span>
       </button>
+      <p v-else class="meta">当前是浏览器页面，不能安装 Scout。请运行 <code>npm run dev</code> 打开 Mino Studio 窗口。</p>
       <button type="button" class="settings-action-pill refresh-pill" :disabled="checking || installing || starting" @click="refresh">
         刷新
       </button>
@@ -299,6 +310,10 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+.el-progress {
+  margin: 8px 0;
+  max-width: 360px;
 }
 code { font-size: 12px; }
 </style>

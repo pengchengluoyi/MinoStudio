@@ -39,6 +39,9 @@ async function startStudioElectron() {
   process.electronApp.once('exit', process.exit)
 }
 
+const DEFAULT_SCOUT_MANIFEST =
+  'https://github.com/pengchengluoyi/MinoScout/releases/latest/download/manifest.json'
+
 function detectScoutManifestUrl() {
   const explicit = String(process.env.VITE_SCOUT_MANIFEST_URL || '').trim()
   if (explicit) return explicit
@@ -48,7 +51,7 @@ function detectScoutManifestUrl() {
     const m = url.match(/github\.com[:/]([^/]+)\//)
     if (m) return `https://github.com/${m[1]}/MinoScout/releases/latest/download/manifest.json`
   } catch { /* local clone without a GitHub remote */ }
-  return ''
+  return DEFAULT_SCOUT_MANIFEST
 }
 
 const NEXUS = (process.env.VITE_NEXUS_URL || 'http://mino.local:10104').replace(/\/$/, '')
@@ -64,6 +67,40 @@ const API_HTTP_PREFIXES = [
   '/logs', '/file', '/get_api', '/upload',
 ]
 
+function scoutManifestProxy() {
+  const url = SCOUT_MANIFEST || DEFAULT_SCOUT_MANIFEST
+  const handle = async (_req, res) => {
+    try {
+      const upstream = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'MinoStudio',
+          'Cache-Control': 'no-cache',
+        },
+        cache: 'no-store',
+        redirect: 'follow',
+      })
+      const body = await upstream.text()
+      res.statusCode = upstream.ok ? 200 : upstream.status
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(body)
+    } catch (e) {
+      res.statusCode = 502
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ error: e?.message || 'manifest proxy failed' }))
+    }
+  }
+  return {
+    name: 'scout-manifest-proxy',
+    configureServer(server) {
+      server.middlewares.use('/__scout_manifest', handle)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use('/__scout_manifest', handle)
+    },
+  }
+}
+
 function apiProxy() {
   return {
     '/ws': { target: NEXUS, changeOrigin: true, ws: true },
@@ -75,8 +112,12 @@ export default defineConfig(({ mode }) => ({
   base: './',
   define: {
     'import.meta.env.VITE_MINO_CLIENT': JSON.stringify('studio'),
+    'import.meta.env.VITE_SCOUT_MANIFEST_URL': JSON.stringify(
+      SCOUT_MANIFEST || 'https://github.com/pengchengluoyi/MinoScout/releases/latest/download/manifest.json',
+    ),
   },
   plugins: [
+    scoutManifestProxy(),
     vue({
       template: {
         compilerOptions: {

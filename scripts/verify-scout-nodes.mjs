@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
+import { packedArchForOs, pickScoutRelease, compareScoutVersions, normalizeScoutVersion } from '../src/utils/scoutRelease.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const failures = []
@@ -73,16 +74,55 @@ check('remote stop disabled when offline', remoteActs.stop.enabled === false)
 check('remote update hidden', remoteActs.update.visible === false)
 check('remote update disabled', remoteActs.update.enabled === false)
 
+console.log('== pick packed zip ==')
+const manifest = {
+  version: '0.1.3',
+  items: [
+    { os: 'darwin', arch: 'arm64', url: 'https://example/MinoScout-0.1.3-darwin-arm64.zip', filename: 'MinoScout-0.1.3-darwin-arm64.zip' },
+    { os: 'linux', arch: 'x64', url: 'https://example/MinoScout-0.1.3-linux-x64.zip', filename: 'MinoScout-0.1.3-linux-x64.zip' },
+    { os: 'win32', arch: 'x64', url: 'https://example/MinoScout-0.1.3-win32-x64.zip', filename: 'MinoScout-0.1.3-win32-x64.zip' },
+  ],
+}
+check('mac packed arch', packedArchForOs('darwin') === 'arm64')
+check('linux packed arch', packedArchForOs('linux') === 'x64')
+check('win packed arch', packedArchForOs('win32') === 'x64')
+const mac = pickScoutRelease(manifest, { os: 'darwin', arch: 'x64' })
+check('mac ignores browser x64', mac?.filename === 'MinoScout-0.1.3-darwin-arm64.zip', mac?.filename)
+const win = pickScoutRelease(manifest, { os: 'win32' })
+check('win zip', win?.filename === 'MinoScout-0.1.3-win32-x64.zip', win?.filename)
+const linux = pickScoutRelease(manifest, { os: 'linux' })
+check('linux zip', linux?.filename === 'MinoScout-0.1.3-linux-x64.zip', linux?.filename)
+
+console.log('== version compare ==')
+check('normalize strips v', normalizeScoutVersion('v0.1.4') === '0.1.4')
+check('0.1.3 < 0.1.4', compareScoutVersions('0.1.3', '0.1.4') < 0)
+check('0.1.4 == v0.1.4', compareScoutVersions('0.1.4', 'v0.1.4') === 0)
+check('0.1.10 > 0.1.9', compareScoutVersions('0.1.10', '0.1.9') > 0)
+
 console.log('== page + nav ==')
 const page = fs.readFileSync(path.join(root, 'src/views/Settings/ScoutNodesPage.vue'), 'utf8')
-check('page empty copy', page.includes('暂无节点'))
+check('page empty copy', page.includes('暂无其他节点'))
+check('page first install', page.includes('安装本机执行器'))
+check('page installing copy', page.includes('安装中'))
+check('page starting copy', page.includes('启动中'))
+check('page calls scoutSetup', page.includes('scoutSetup'))
+check('page calls scoutUninstall', page.includes('scoutUninstall'))
 check('page calls scoutStart', page.includes('scoutStart'))
 check('page calls scoutStop', page.includes('scoutStop'))
 check('page calls scoutRestart', page.includes('scoutRestart'))
-check('page one table', (page.match(/settings-table-card/g) || []).length === 1)
+check('page two table cards', (page.match(/settings-table-card/g) || []).length === 2)
 check('page expand devices', page.includes('type="expand"') && page.includes('row.devices'))
-check('page start v-if visible', page.includes('rowActions(row).start.visible'))
+check('page start v-if visible', page.includes('rowActions(localRow).start.visible'))
+check('page start not disabled by empty busyId', page.includes('remoteBusy') && !page.includes('|| busyId'))
+check('page start listens progress', page.includes('onScoutStartProgress') && page.includes('scoutStartStatus'))
 check('page stop v-if visible', page.includes('rowActions(row).stop.visible'))
+check('page uninstall when stopped', page.includes('!localScout.running'))
+check('page checks latest on enter', page.includes('checkingVersion') && page.includes('refreshRelease'))
+check('page latest copy', page.includes('当前已是最新版本'))
+check('page update button', page.includes('更新到 v'))
+check('page checking copy', page.includes('正在检测版本'))
+check('page no reinstall', !page.includes('重新安装'))
+check('page no nexus form', !page.includes('config-label') && !page.includes('凭证'))
 check('no leftover local card', !page.includes('本机启停') && !page.includes('nodeCount'))
 const router = fs.readFileSync(path.join(root, 'src/router/index.js'), 'utf8')
 check('route /settings/scout', router.includes("path: 'scout'") && router.includes('SettingsScout'))

@@ -100,6 +100,7 @@ const mergeCaseSpec = (hit, c) => {
     'precondition', 'precondition_raw',
     'steps', 'step_lines', 'steps_raw',
     'expected', 'expected_lines', 'expected_raw', 'expected_by_step', 'goal',
+    'engine_steps',
   ]
   for (const k of keys) {
     if (isEmptySpecVal(c?.[k]) && !isEmptySpecVal(hit?.[k])) out[k] = hit[k]
@@ -371,6 +372,11 @@ const loadHeader = async (caseRunId) => {
     const r = await getCaseRunnerTraceDetail(caseRunId)
     const d = r?.data || {}
     const rc = d.run_context || {}
+    const caseId = String(caseRunId).split('::')[1] || ''
+    const caseRow = (Array.isArray(d.cases) ? d.cases : []).find((c) => String(c.case_id || '') === caseId)
+    const caseStatus = String(caseRow?.status || d.case_status || '').toLowerCase()
+    const taskStatus = String(d.status || '').toLowerCase()
+    const caseEnded = ['pass', 'fail', 'failed', 'blocked', 'declined', 'cancelled', 'skipped', 'untestable', 'unverifiable'].includes(caseStatus)
     headerMeta.value = {
       sn: d.sn || rc.sn || '',
       overall: d.overall_status || '',
@@ -380,6 +386,7 @@ const loadHeader = async (caseRunId) => {
       skipped: d.skipped,
       elapsed: d.elapsed_ms,
       goal: d.goal || d.case_name || '',
+      live: !d.agent_finished && !caseEnded && taskStatus === 'running',
     }
   } catch (_) {
     headerMeta.value = { live: true }

@@ -1,6 +1,19 @@
 const DEFAULT_NEXUS = 'http://mino.local:10104'
+const DEFAULT_SCOUT_MANIFEST =
+  'https://github.com/pengchengluoyi/MinoScout/releases/latest/download/manifest.json'
 
 export const isElectronRuntime = () => typeof window !== 'undefined' && !!window.electronAPI
+
+/** Studio 桌面窗口才能把 Scout zip 写到本机。浏览器标签页没有这些 IPC。 */
+export const canInstallLocalScout = () =>
+  typeof window !== 'undefined'
+  && (
+    typeof window.electronAPI?.scoutSetup === 'function'
+    || (
+      typeof window.electronAPI?.scoutDownload === 'function'
+      && typeof window.electronAPI?.scoutInstall === 'function'
+    )
+  )
 
 export const nexusOrigin = () => {
   const baked = String(import.meta.env.VITE_NEXUS_URL || '').trim().replace(/\/$/, '')
@@ -9,7 +22,7 @@ export const nexusOrigin = () => {
 
 /** GitHub Release `manifest.json` only. Studio never asks Nexus for the installer. */
 export const scoutManifestUrl = () =>
-  String(import.meta.env.VITE_SCOUT_MANIFEST_URL || '').trim()
+  String(import.meta.env.VITE_SCOUT_MANIFEST_URL || '').trim() || DEFAULT_SCOUT_MANIFEST
 
 export const usesWebProxy = () => {
   if (typeof window === 'undefined' || isElectronRuntime()) return false

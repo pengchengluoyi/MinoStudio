@@ -18,8 +18,11 @@ export function belongsToAgentTask(payload = {}, taskId = '') {
   const tid = String(taskId || '').trim()
   if (!tid) return false
   const runId = String(payload.run_id || payload.task_id || '').trim()
-  if (runId === tid) return true
+  const batch = String(payload.task_id || '').trim()
+  if (runId === tid || batch === tid) return true
   if (runId.startsWith(`${tid}::`) || runId.startsWith(`${tid}-`)) return true
+  if (tid.startsWith(`${runId}::`) || tid.startsWith(`${runId}-`)) return true
+  if (batch && (tid.startsWith(`${batch}::`) || tid === batch)) return true
   if (String(payload.task_id || '') === tid) return true
   return false
 }

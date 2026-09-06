@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import { getAuthStatus } from '@/api/auth'
 import {
@@ -11,14 +11,15 @@ import {
   parseRuntimeNodes,
   sendNodeCommand,
 } from '@/api/runtime'
-import { nexusOrigin, scoutManifestUrl } from '@/utils/config'
-import { scoutReleasesPageUrl } from '@/utils/scoutRelease'
+import { canInstallLocalScout, nexusOrigin, scoutManifestUrl } from '@/utils/config'
+import { packedArchForOs, scoutReleasesPageUrl, compareScoutVersions, normalizeScoutVersion } from '@/utils/scoutRelease'
 import { openExternalUrl } from '@/utils/openExternal'
 import {
   nodeActionState,
   ownershipLabel,
 } from '@/utils/scoutNodes'
 import { formatRelativeTime } from '@/utils/relativeTime'
+import { ipcPayload } from '@/utils/ipcPayload'
 import './settings-ui.css'
 
 const loading = ref(false)
@@ -41,29 +42,75 @@ const starting = ref(false)
 const stopping = ref(false)
 const restarting = ref(false)
 const updating = ref(false)
+const uninstalling = ref(false)
 const installProgress = ref(null)
-const savingConfig = ref(false)
-const changingToken = ref(false)
-const nexusDraft = ref('')
-const tokenDraft = ref('')
+const setupJob = ref({
+  active: false,
+  stage: '',
+  label: '',
+  percent: 0,
+  error: '',
+})
 const busyId = ref('')
+const remoteBusy = computed(() => Boolean(busyId.value))
+const startJob = ref({
+  active: false,
+  stage: '',
+  label: '',
+  error: '',
+  pid: null,
+})
 const release = ref(null)
 const releaseMissing = ref(false)
+const releaseError = ref('')
+const checkingVersion = ref(true)
 const platform = ref(detectClientPlatform())
 const relativeTick = ref(0)
 let relativeTimer = null
 let pollTimer = null
 let progressStop = null
+let startProgressStop = null
+let startWatching = false
 
 const props = defineProps({
   embedded: { type: Boolean, default: false },
 })
 
-const isElectron = computed(() => Boolean(typeof window !== 'undefined' && window.electronAPI?.scoutStart))
+const canInstall = computed(() => canInstallLocalScout())
+const isElectron = computed(() => canInstall.value)
 const origin = computed(() => nexusOrigin())
 const studioId = computed(() => localScout.value.studioId || '')
 const localId = computed(() => localScout.value.scoutId || '')
 const releasesPage = computed(() => scoutReleasesPageUrl(scoutManifestUrl()))
+const latestVersion = computed(() => normalizeScoutVersion(release.value?.version || ''))
+const installedVersion = computed(() => normalizeScoutVersion(localScout.value.version || ''))
+const localInstalled = computed(() => Boolean(
+  localScout.value.installed || localScout.value.appInstalled,
+))
+const setupInProgress = computed(() => Boolean(setupJob.value.active))
+const versionCheck = computed(() => {
+  if (!localInstalled.value || setupInProgress.value) return ''
+  if (checkingVersion.value) return 'checking'
+  if (!latestVersion.value || releaseMissing.value) return 'unknown'
+  if (!installedVersion.value) return 'outdated'
+  return compareScoutVersions(installedVersion.value, latestVersion.value) >= 0 ? 'latest' : 'outdated'
+})
+const updateAvailable = computed(() => versionCheck.value === 'outdated')
+const downloadPercent = computed(() => {
+  const n = Number(setupJob.value?.percent ?? installProgress.value?.percent)
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null
+})
+const setupPhase = computed(() => {
+  const stage = setupJob.value.stage
+  if (stage === 'start' || stage === 'done') return '启动中'
+  return '安装中'
+})
+const setupProgressText = computed(() => {
+  const phase = setupPhase.value
+  const label = setupJob.value.label || phase
+  if (downloadPercent.value != null) return `${phase} · ${label} ${downloadPercent.value}%`
+  return `${phase} · ${label}`
+})
 
 const openReleases = (e) => {
   e?.preventDefault?.()
@@ -72,6 +119,7 @@ const openReleases = (e) => {
 
 /** Prefer config scout_id; else same studio_id; else sole node on this Studio. */
 const resolvedLocalId = computed(() => {
+  if (!localInstalled.value) return ''
   if (localId.value) return String(localId.value)
   const sid = String(studioId.value || '').toLowerCase()
   if (sid) {
@@ -83,6 +131,53 @@ const resolvedLocalId = computed(() => {
   }
   return ''
 })
+
+const applySetupJob = (job) => {
+  if (!job) return
+  setupJob.value = {
+    active: Boolean(job.active),
+    stage: job.stage || '',
+    label: job.label || '',
+    percent: Number(job.percent) || 0,
+    error: job.error || '',
+  }
+  if (job.active) {
+    updating.value = true
+    installProgress.value = { percent: job.percent, stage: job.stage, label: job.label }
+    return
+  }
+  if (job.stage === 'done') {
+    updating.value = false
+    installProgress.value = { percent: 100, stage: 'done', label: job.label || '安装完成' }
+    return
+  }
+  if (job.error) updating.value = false
+}
+
+const applyStartJob = (job) => {
+  if (!job) return
+  const wasActive = startJob.value.active
+  startJob.value = {
+    active: Boolean(job.active),
+    stage: job.stage || '',
+    label: job.label || '',
+    error: job.error || '',
+    pid: job.pid || null,
+  }
+  starting.value = Boolean(job.active)
+  if (job.active) return
+  if (!startWatching && !wasActive) return
+  startWatching = false
+  if (job.error) {
+    ElMessage.error(job.error)
+    return
+  }
+  if (job.stage === 'done') {
+    ElMessage.success('已启动本机执行器')
+    refreshLocal()
+    refreshNodes()
+  }
+}
 
 const refreshAuth = async () => {
   try {
@@ -110,7 +205,7 @@ const refreshLocal = async () => {
   try {
     const next = await window.electronAPI.scoutInstalledVersion()
     localScout.value = { ...localScout.value, ...(next || {}) }
-    if (!changingToken.value) nexusDraft.value = localScout.value.nexusUrl || origin.value
+    if (next?.setup) applySetupJob(next.setup)
   } catch { /* ignore */ }
 }
 
@@ -129,45 +224,54 @@ const refreshNodes = async () => {
 
 const refreshRelease = async () => {
   releaseMissing.value = false
+  releaseError.value = ''
   try {
-    const res = await getScoutLatestRelease(platform.value)
-    release.value = res?.data || null
-    if (!release.value?.url) releaseMissing.value = true
-  } catch {
+    const res = await getScoutLatestRelease({ os: platform.value.os })
+    release.value = ipcPayload(res?.data || null)
+    if (!release.value?.url) {
+      releaseMissing.value = true
+      releaseError.value = 'GitHub 上没有当前系统的安装包'
+    }
+  } catch (e) {
     release.value = null
     releaseMissing.value = true
+    releaseError.value = e?.response?.data?.detail || e?.message || '拉取安装包失败'
   }
 }
 
 const refresh = async ({ silent = false } = {}) => {
-  if (!silent) loading.value = true
+  if (!silent) {
+    loading.value = true
+    checkingVersion.value = true
+  }
   try {
     await refreshAuth()
     await refreshLocal()
     await Promise.all([refreshNodes(), refreshRelease()])
   } finally {
+    checkingVersion.value = false
     if (!silent) loading.value = false
   }
 }
-
-const localInstalled = computed(() => Boolean(
-  localScout.value.installed || localScout.value.appInstalled || localScout.value.running,
-))
 
 const localRow = computed(() => {
   const id = String(resolvedLocalId.value || '').toLowerCase()
   const matched = id
     ? nodes.value.find((n) => String(n.node_id || n.scout_id || '').toLowerCase() === id)
     : null
+  const running = Boolean(localScout.value.running)
   if (matched) {
+    const online = matched.status === 'online' || matched.online || matched.alive || running
     return {
       ...matched,
       hostname: matched.hostname || '本机',
+      status: online ? 'online' : (matched.status || 'offline'),
+      online,
+      alive: online,
       _local: true,
       _placeholder: false,
     }
   }
-  const running = Boolean(localScout.value.running)
   return {
     node_id: resolvedLocalId.value || localId.value || 'local',
     scout_id: localId.value || resolvedLocalId.value || '',
@@ -187,9 +291,20 @@ const localRow = computed(() => {
 })
 
 const localStatusText = computed(() => {
-  if (localRow.value.status === 'online' || localRow.value.online) return '在线'
-  if (localInstalled.value || localScout.value.running) return '离线'
+  if (setupInProgress.value) return setupPhase.value
+  if (starting.value || startJob.value.active || restarting.value) {
+    return startJob.value.label ? `启动中 · ${startJob.value.label}` : '启动中'
+  }
+  if (stopping.value) return '停止中'
+  if (localScout.value.running || localRow.value.online || localRow.value.status === 'online') return '在线'
+  if (localInstalled.value) return '已停止'
   return '未安装'
+})
+
+const localStatusType = computed(() => {
+  if (localStatusText.value === '在线') return 'success'
+  if (localStatusText.value === '启动中' || localStatusText.value === '安装中' || localStatusText.value === '停止中') return 'warning'
+  return 'info'
 })
 
 const remoteRows = computed(() => {
@@ -208,7 +323,7 @@ const localDevices = computed(() => {
   return list
 })
 
-const showInstallUi = computed(() => !localInstalled.value && !resolvedLocalId.value)
+const showInstallUi = computed(() => setupInProgress.value || !localInstalled.value)
 
 const rowActions = (row) => {
   if (row?._local) {
@@ -244,12 +359,34 @@ const runLocal = async (kind) => {
     ElMessage.warning('请在 Mino Studio 桌面端操作本机执行器。')
     return
   }
-  const flag = kind === 'start' ? starting : kind === 'stop' ? stopping : restarting
+  if (kind === 'start') {
+    startWatching = true
+    starting.value = true
+    await nextTick()
+    try {
+      const res = await api.scoutStart()
+      if (res?.start) applyStartJob(res.start)
+      if (!res?.ok) throw new Error(res?.error || '启动失败')
+      if (res.already) {
+        startWatching = false
+        starting.value = false
+        ElMessage.success('执行器已在运行')
+        await refreshLocal()
+        await refreshNodes()
+      }
+    } catch (e) {
+      startWatching = false
+      starting.value = false
+      ElMessage.error(e?.message || '启动失败')
+    }
+    return
+  }
+  const flag = kind === 'stop' ? stopping : restarting
   flag.value = true
+  await nextTick()
   try {
     let res
-    if (kind === 'start') res = await api.scoutStart()
-    else if (kind === 'stop') res = await api.scoutStop()
+    if (kind === 'stop') res = await api.scoutStop()
     else if (api.scoutRestart) res = await api.scoutRestart()
     else {
       const stopped = await api.scoutStop()
@@ -257,9 +394,8 @@ const runLocal = async (kind) => {
       res = await api.scoutStart()
     }
     if (!res?.ok) throw new Error(res?.error || '操作失败')
-    ElMessage.success(kind === 'start' ? (res.already ? '执行器已在运行' : '已启动本机执行器')
-      : kind === 'stop' ? (res.already ? '执行器已停止' : '已停止本机执行器')
-        : '已重启本机执行器')
+    ElMessage.success(kind === 'stop' ? (res.already ? '执行器已停止' : '已停止本机执行器')
+      : '已重启本机执行器')
     await refreshLocal()
     await refreshNodes()
   } catch (e) {
@@ -332,60 +468,34 @@ const act = async (row, command) => {
   ElMessage.warning('节点离线，无法下发')
 }
 
-const saveNexusUrl = async () => {
-  if (!window.electronAPI?.scoutWriteConfig) {
-    ElMessage.warning('请在桌面端改本机配置。')
-    return
-  }
-  savingConfig.value = true
-  try {
-    const res = await window.electronAPI.scoutWriteConfig({
-      nexus_url: nexusDraft.value || origin.value,
-    })
-    if (!res?.ok) throw new Error(res?.error || '保存失败')
-    ElMessage.success('已写入本机 Nexus 地址')
-    await refreshLocal()
-  } catch (e) {
-    ElMessage.error(e?.message || '保存失败')
-  } finally {
-    savingConfig.value = false
-  }
+const humanBytes = (n) => {
+  const b = Number(n) || 0
+  if (b <= 0) return ''
+  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`
+  return `${(b / 1024 / 1024).toFixed(1)} MB`
 }
 
-const saveToken = async () => {
-  if (!window.electronAPI?.scoutWriteConfig) return
-  const token = String(tokenDraft.value || '').trim()
-  if (!token) {
-    ElMessage.warning('请填写新的凭证')
-    return
+/** 让提示说清这次到底走了哪条路 —— 增量和全量差三个数量级，用户该看得到。 */
+const scoutSetupSummary = (res) => {
+  const tail = res?.launched ? '并启动本机 Scout' : ''
+  if (res?.mode === 'up-to-date') return `本机 Scout 已是最新，无需下载${tail ? '，已' + tail : ''}`
+  const size = humanBytes(res?.bytes)
+  if (res?.mode === 'layers' && res.layers?.length) {
+    return `已更新 ${res.layers.join(' + ')} 层${size ? `（${size}）` : ''}${tail}`
   }
-  savingConfig.value = true
-  try {
-    const res = await window.electronAPI.scoutWriteConfig({
-      nexus_url: nexusDraft.value || localScout.value.nexusUrl || origin.value,
-      token,
-    })
-    if (!res?.ok) throw new Error(res?.error || '保存失败')
-    ElMessage.success('已更新本机凭证')
-    tokenDraft.value = ''
-    changingToken.value = false
-    await refreshLocal()
-  } catch (e) {
-    ElMessage.error(e?.message || '保存失败')
-  } finally {
-    savingConfig.value = false
-  }
+  return `Studio 已安装${tail ? tail : ' Scout'}${size ? `（${size}）` : ''}`
 }
 
 const updateLocal = async () => {
-  if (!window.electronAPI?.scoutDownload) {
-    ElMessage.warning('请在桌面端安装本机执行器。')
+  const api = window.electronAPI
+  if (typeof api?.scoutSetup !== 'function') {
+    ElMessage.error('当前不是 Mino Studio 桌面窗口，无法安装 Scout。请运行 npm run dev 打开应用后再点下载。')
     return
   }
+  if (setupJob.value.active) return
   updating.value = true
-  installProgress.value = null
   try {
-    const rel = release.value || (await getScoutLatestRelease(platform.value))?.data
+    const rel = release.value || (await getScoutLatestRelease({ os: platform.value.os }))?.data
     release.value = rel
     if (!rel?.url) throw new Error('没有可用的 GitHub 安装包')
     let token = ''
@@ -393,29 +503,61 @@ const updateLocal = async () => {
       const tok = await createScoutInstallToken()
       token = tok?.data?.token || tok?.token || ''
     } catch { /* keep existing token */ }
-    const written = await window.electronAPI.scoutWriteConfig({
-      nexus_url: origin.value,
-      token,
-      version: rel.version || '',
-    })
-    if (!written?.ok) throw new Error(written?.error || '写入配置失败')
     const filename = rel.filename || String(rel.url).split('?')[0].split('/').pop() || 'scout-installer'
-    const downloaded = await window.electronAPI.scoutDownload({
+    const res = await api.scoutSetup(ipcPayload({
       url: rel.url,
       sha256: rel.sha256 || '',
       filename,
-    })
-    if (!downloaded?.ok) throw new Error(downloaded?.error || '下载失败')
-    const opened = await window.electronAPI.scoutInstall({ filePath: downloaded.path })
-    if (!opened?.ok) throw new Error(opened?.error || '无法打开安装包')
-    ElMessage.success(opened.launched ? '已注册本机启动项' : '已打开安装包')
+      nexus_url: origin.value,
+      token,
+      version: rel.version || '',
+      // 分层字段。主进程拿它跟本机 bin/layers.txt 比对，只下指纹变了的层 ——
+      // 只改代码的发版是 90 KB，不是 439 MB。缺了这两个字段就退回下合并包。
+      bytes: rel.bytes || 0,
+      layers: rel.layers || null,
+    }))
+    if (res?.setup) applySetupJob(res.setup)
+    if (!res?.ok) throw new Error(res?.error || '安装失败')
+    ElMessage.success(scoutSetupSummary(res))
     await refreshLocal()
     await refreshNodes()
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '安装失败')
   } finally {
-    updating.value = false
-    installProgress.value = null
+    if (!setupJob.value.active) updating.value = false
+  }
+}
+
+const uninstallLocal = async () => {
+  const api = window.electronAPI
+  if (typeof api?.scoutUninstall !== 'function') {
+    ElMessage.warning('请在 Mino Studio 桌面端卸载。')
+    return
+  }
+  if (localScout.value.running) {
+    ElMessage.warning('请先停止 Scout，再卸载')
+    return
+  }
+  try {
+    await ElMessageBox.confirm('卸载后本机 Scout 将停止并从这台电脑移除，确定继续？', '卸载本机 Scout', {
+      type: 'warning',
+      confirmButtonText: '卸载',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  uninstalling.value = true
+  try {
+    const res = await api.scoutUninstall()
+    if (!res?.ok) throw new Error(res?.error || '卸载失败')
+    ElMessage.success('已卸载本机 Scout')
+    await refreshLocal()
+    await refreshNodes()
+  } catch (e) {
+    ElMessage.error(e?.message || '卸载失败')
+  } finally {
+    uninstalling.value = false
   }
 }
 
@@ -423,15 +565,24 @@ onMounted(async () => {
   try {
     const st = await window.electronAPI?.getRuntimeStatus?.()
     if (st?.electron?.platform) {
-      platform.value = {
-        os: st.electron.platform,
-        arch: st.electron.arch === 'arm64' ? 'arm64' : 'x64',
-      }
+      const os = st.electron.platform
+      platform.value = { os, arch: packedArchForOs(os) }
     }
   } catch { /* UA fallback */ }
-  progressStop = window.electronAPI?.onScoutDownloadProgress?.((p) => {
-    installProgress.value = p
+  progressStop = window.electronAPI?.onScoutSetupProgress?.((p) => {
+    applySetupJob(p)
   }) || null
+  startProgressStop = window.electronAPI?.onScoutStartProgress?.((p) => {
+    applyStartJob(p)
+  }) || null
+  try {
+    const status = await window.electronAPI?.scoutSetupStatus?.()
+    if (status) applySetupJob(status)
+  } catch { /* no job yet */ }
+  try {
+    const startStatus = await window.electronAPI?.scoutStartStatus?.()
+    if (startStatus) applyStartJob(startStatus)
+  } catch { /* no job yet */ }
   await refresh()
   relativeTimer = setInterval(() => { relativeTick.value += 1 }, 30000)
   pollTimer = setInterval(() => { refresh({ silent: true }) }, 15000)
@@ -441,6 +592,7 @@ onUnmounted(() => {
   if (relativeTimer) clearInterval(relativeTimer)
   if (pollTimer) clearInterval(pollTimer)
   progressStop?.()
+  startProgressStop?.()
 })
 </script>
 
@@ -462,34 +614,41 @@ onUnmounted(() => {
     <!-- 未安装：整块切换为下载安装 UI -->
     <section v-if="showInstallUi" class="settings-card install-hero">
       <div class="settings-kicker">本机 Scout</div>
-      <h3 class="install-title">安装本机执行器</h3>
+      <h3 class="install-title">{{ setupInProgress ? setupPhase : '安装本机执行器' }}</h3>
       <p class="settings-page-desc">
-        与当前 Studio 同一台电脑上的 Scout。安装后自动连接
-        <code>{{ origin }}</code>
+        {{ setupInProgress
+          ? (setupPhase === '启动中' ? '正在启动本机 Scout，并连接工作台。' : '正在安装本机 Scout，请稍候。')
+          : '这台电脑还没有 Scout。下载安装后会自动连上当前工作台。' }}
       </p>
       <p class="install-meta">
-        {{ platform.os }}/{{ platform.arch }}
-        <template v-if="release?.version"> · 最新 {{ release.version }}</template>
+        {{ platform.os }}-{{ platform.arch }}
+        <template v-if="latestVersion"> · 最新 v{{ latestVersion }}</template>
       </p>
-      <p v-if="releaseMissing" class="settings-page-desc install-warn">
-        暂无可用安装包。
+      <p v-if="!release?.url" class="settings-page-desc install-warn">
+        {{ releaseError || '暂无可用安装包。' }}
         <a v-if="releasesPage" href="#" @click="openReleases">打开发布页</a>
       </p>
-      <p v-if="updating && installProgress?.percent != null" class="settings-page-desc">
-        下载中 {{ installProgress.percent }}%
-      </p>
+      <el-progress
+        v-if="setupInProgress || (updating && downloadPercent != null)"
+        :percentage="downloadPercent ?? 0"
+        :stroke-width="10"
+      />
+      <p v-if="setupInProgress || updating" class="install-meta">{{ setupProgressText }}</p>
+      <p v-if="setupJob.error && !setupInProgress" class="settings-page-desc install-warn">{{ setupJob.error }}</p>
       <div class="row-actions">
         <button
-          v-if="isElectron"
+          v-if="canInstall && release?.url"
           type="button"
           class="settings-action-pill"
-          :disabled="updating || releaseMissing"
+          :disabled="updating || setupInProgress"
           @click="updateLocal"
         >
           <el-icon><Download /></el-icon>
-          <span>{{ updating ? '安装中…' : '从 GitHub 下载并安装' }}</span>
+          <span>{{ setupInProgress || updating ? setupProgressText : '从 GitHub 下载并安装' }}</span>
         </button>
-        <p v-else class="settings-page-desc">请在 Mino Studio 桌面端安装本机执行器。</p>
+        <p v-else-if="release?.url" class="settings-page-desc">
+          当前是浏览器里的 Studio 页面，不能把 Scout 装到这台电脑。请在终端执行 <code>npm run dev</code>，在弹出的 Mino Studio 窗口里再点下载。
+        </p>
       </div>
     </section>
 
@@ -500,82 +659,83 @@ onUnmounted(() => {
           <div class="settings-kicker">本机</div>
           <div class="local-title-line">
             <strong>{{ localRow.scout_id || localRow.node_id || '尚未注册' }}</strong>
-            <el-tag size="small" :type="localStatusText === '在线' ? 'success' : 'info'" effect="light">
+            <el-tag size="small" :type="localStatusType" effect="light">
               {{ localStatusText }}
             </el-tag>
           </div>
           <p class="local-meta">
             {{ localRow.hostname || '本机' }}
-            <template v-if="localRow.platform || platform.os"> · {{ localRow.platform || platform.os }}</template>
-            <template v-if="localScout.version || localRow.scout_version"> · v{{ localScout.version || localRow.scout_version }}</template>
+            <template v-if="platform.os"> · {{ platform.os }}-{{ platform.arch }}</template>
+            <template v-if="installedVersion"> · 本机 v{{ installedVersion }}</template>
+            <template v-if="latestVersion"> · 最新 v{{ latestVersion }}</template>
             <template v-if="heartbeatText(localRow)"> · {{ heartbeatText(localRow) }}</template>
           </p>
         </div>
         <div class="row-actions">
           <button
-            v-if="rowActions(localRow).start.visible"
+            v-if="rowActions(localRow).start.visible && !setupInProgress"
             type="button"
             class="settings-action-pill"
-            :disabled="!rowActions(localRow).start.enabled || starting || busyId"
+            :disabled="!rowActions(localRow).start.enabled || starting || remoteBusy"
             @click="act(localRow, 'start')"
-          >{{ starting ? '启动中…' : '启动' }}</button>
+          >{{ starting ? (startJob.label || '启动中…') : '启动' }}</button>
           <button
             v-if="rowActions(localRow).stop.visible"
             type="button"
             class="settings-action-pill"
-            :disabled="!rowActions(localRow).stop.enabled || stopping || restarting || busyId"
+            :disabled="!rowActions(localRow).stop.enabled || stopping || restarting || remoteBusy || setupInProgress"
             @click="act(localRow, 'stop')"
           >{{ stopping ? '停止中…' : '停止' }}</button>
           <button
             v-if="rowActions(localRow).restart.visible"
             type="button"
             class="settings-action-pill"
-            :disabled="!rowActions(localRow).restart.enabled || starting || stopping || restarting || busyId"
+            :disabled="!rowActions(localRow).restart.enabled || starting || stopping || restarting || remoteBusy || setupInProgress"
             @click="act(localRow, 'restart')"
           >{{ restarting ? '重启中…' : '重启' }}</button>
+          <span
+            v-if="isElectron && localInstalled && versionCheck === 'checking'"
+            class="version-status"
+          >正在检测版本…</span>
+          <span
+            v-else-if="isElectron && localInstalled && versionCheck === 'latest'"
+            class="version-status is-latest"
+          >当前已是最新版本</span>
           <button
-            v-if="isElectron"
+            v-else-if="isElectron && localInstalled && updateAvailable"
             type="button"
             class="settings-action-pill"
-            :disabled="updating"
+            :disabled="updating || setupInProgress || !release?.url"
             @click="act(localRow, 'update')"
-          >{{ updating ? '更新中…' : '更新' }}</button>
+          >{{ setupInProgress || updating ? setupProgressText : `更新到 v${latestVersion}` }}</button>
+          <span
+            v-else-if="isElectron && localInstalled && versionCheck === 'unknown'"
+            class="version-status"
+          >无法检测最新版本</span>
+          <button
+            v-if="isElectron && localInstalled && !localScout.running"
+            type="button"
+            class="settings-action-pill"
+            :disabled="uninstalling || setupInProgress || updating || starting || stopping"
+            @click="uninstallLocal"
+          >{{ uninstalling ? '卸载中…' : '卸载' }}</button>
         </div>
       </div>
-
-      <div v-if="isElectron" class="local-config">
-        <div class="config-row">
-          <span class="config-label">Nexus</span>
-          <el-input v-model="nexusDraft" size="small" />
-          <button type="button" class="settings-action-pill" :disabled="savingConfig" @click="saveNexusUrl">
-            {{ savingConfig ? '保存中…' : '保存' }}
-          </button>
-        </div>
-        <div class="config-row">
-          <span class="config-label">凭证</span>
-          <el-input
-            v-if="changingToken"
-            v-model="tokenDraft"
-            size="small"
-            type="password"
-            show-password
-            placeholder="新的凭证"
-          />
-          <span v-else class="config-value">{{ localScout.hasToken ? (localScout.tokenMasked || '已配置') : '未配置' }}</span>
-          <button v-if="!changingToken" type="button" class="settings-action-pill" @click="changingToken = true">更改</button>
-          <template v-else>
-            <button type="button" class="settings-action-pill" :disabled="savingConfig" @click="saveToken">保存</button>
-            <button type="button" class="settings-action-pill" @click="changingToken = false; tokenDraft = ''">取消</button>
-          </template>
-        </div>
-      </div>
+      <p v-if="startJob.error && !starting" class="settings-page-desc install-warn">{{ startJob.error }}</p>
+      <el-progress
+        v-if="setupInProgress || (updating && downloadPercent != null)"
+        class="install-progress"
+        :percentage="downloadPercent ?? 0"
+        :stroke-width="10"
+      />
+      <p v-if="setupInProgress || updating" class="install-meta">{{ setupProgressText }}</p>
 
       <el-table
         :data="localDevices"
         size="small"
         border
         class="local-devices"
-        empty-text="暂无设备"
+        empty-text="暂无在线设备"
       >
         <el-table-column label="设备" min-width="140">
           <template #default="{ row: d }">{{ d.sn || '—' }}</template>
@@ -655,14 +815,14 @@ onUnmounted(() => {
                 v-if="rowActions(row).stop.visible"
                 type="button"
                 class="settings-action-pill"
-                :disabled="!rowActions(row).stop.enabled || stopping || restarting || busyId"
+                :disabled="!rowActions(row).stop.enabled || stopping || restarting || remoteBusy"
                 @click="act(row, 'stop')"
               >停止</button>
               <button
                 v-if="rowActions(row).restart.visible"
                 type="button"
                 class="settings-action-pill"
-                :disabled="!rowActions(row).restart.enabled || starting || stopping || restarting || busyId"
+                :disabled="!rowActions(row).restart.enabled || starting || stopping || restarting || remoteBusy"
                 @click="act(row, 'restart')"
               >重启</button>
             </div>
@@ -694,6 +854,10 @@ onUnmounted(() => {
 .install-warn {
   color: #b45309;
 }
+.install-progress {
+  margin: 10px 0 0;
+  max-width: 360px;
+}
 .local-block {
   margin-bottom: 14px;
   padding: 14px 16px;
@@ -722,42 +886,21 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--mo-muted);
 }
+.version-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mo-muted);
+  line-height: 28px;
+  white-space: nowrap;
+}
+.version-status.is-latest {
+  color: #059669;
+}
 .row-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-}
-.local-config {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--mo-border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.config-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.config-label {
-  flex: 0 0 44px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--mo-muted);
-}
-.config-value {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--mo-text);
-}
-.local-config :deep(.el-input) {
-  flex: 1;
-  min-width: 0;
-  max-width: 360px;
 }
 .local-devices,
 .nested-table {
@@ -765,3 +908,6 @@ onUnmounted(() => {
 }
 code { font-size: 12px; }
 </style>
+
+
+

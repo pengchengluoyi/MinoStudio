@@ -1,6 +1,6 @@
 import request from '@/utils/request'
 import { scoutManifestUrl } from '@/utils/config'
-import { pickScoutRelease } from '@/utils/scoutRelease'
+import { packedArchForOs, pickScoutRelease } from '@/utils/scoutRelease'
 
 const pickData = (res) => res?.data || res || {}
 
@@ -16,36 +16,56 @@ export const sendNodeCommand = (nodeId, command, { studioId = '', reason = 'stud
   })
 
 const fetchManifestJson = async (url) => {
+  const load = async (target) => {
+    const response = await fetch(target, {
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+      cache: 'no-store',
+    })
+    if (!response.ok) {
+      const err = new Error(`HTTP ${response.status}`)
+      err.response = { status: response.status }
+      throw err
+    }
+    return response.json()
+  }
+  if (import.meta.env.DEV) {
+    try {
+      return await load('/__scout_manifest')
+    } catch { /* fall through to Electron / GitHub */ }
+  }
   if (typeof window !== 'undefined' && window.electronAPI?.scoutFetchJson) {
     const res = await window.electronAPI.scoutFetchJson(url)
-    if (!res?.ok) throw new Error(res?.error || 'manifest fetch failed')
+    if (!res?.ok) throw new Error(res?.error || '无法从 GitHub 拉取安装列表')
     return res.data
   }
-  const response = await fetch(url, { headers: { Accept: 'application/json' } })
-  if (!response.ok) {
-    const err = new Error(`HTTP ${response.status}`)
-    err.response = { status: response.status }
-    throw err
+  try {
+    return await load(url)
+  } catch (e) {
+    const msg = String(e?.message || e || '')
+    if (/failed to fetch/i.test(msg) || e?.name === 'TypeError') {
+      throw new Error('无法从 GitHub 拉取安装列表（浏览器不能直连 GitHub，请用桌面端）')
+    }
+    throw e
   }
-  return response.json()
 }
 
-export const getScoutLatestRelease = async ({ os, arch } = {}) => {
-  const want = { os: os || undefined, arch: arch || undefined }
+export const getScoutLatestRelease = async ({ os } = {}) => {
+  const want = { os: os || undefined }
   const manifestUrl = scoutManifestUrl()
   if (!manifestUrl) {
     const err = new Error('未解析到 GitHub Scout manifest。本地请有 origin，或设置 VITE_SCOUT_MANIFEST_URL。')
     err.response = { status: 404, data: { detail: err.message } }
     throw err
   }
-  const manifest = await fetchManifestJson(manifestUrl)
+  const bust = `${manifestUrl}${manifestUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+  const manifest = await fetchManifestJson(bust)
   const item = pickScoutRelease(manifest, want)
   if (!item?.url) {
     const err = new Error('GitHub manifest 里没有当前系统的安装包')
     err.response = { status: 404, data: { detail: err.message } }
     throw err
   }
-  return { data: item }
+  return { data: JSON.parse(JSON.stringify(item)) }
 }
 
 export const createScoutInstallToken = () =>
@@ -61,11 +81,15 @@ export const parseRuntimeNodes = (res) => {
 }
 
 export const detectClientPlatform = () => {
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
-  const plat = typeof navigator !== 'undefined' ? navigator.platform || '' : ''
+  const host = typeof window !== 'undefined' ? window.electronAPI?.hostPlatform : null
   let os = 'linux'
-  if (/Mac/i.test(plat) || /Mac OS/i.test(ua)) os = 'darwin'
-  else if (/Win/i.test(plat) || /Windows/i.test(ua)) os = 'win32'
-  const arch = /arm|aarch64/i.test(ua) || /ARM/i.test(plat) ? 'arm64' : 'x64'
-  return { os, arch }
+  if (host?.os === 'win32' || host?.os === 'darwin' || host?.os === 'linux') {
+    os = host.os
+  } else {
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
+    const plat = typeof navigator !== 'undefined' ? navigator.platform || '' : ''
+    if (/Mac/i.test(plat) || /Mac OS/i.test(ua)) os = 'darwin'
+    else if (/Win/i.test(plat) || /Windows/i.test(ua)) os = 'win32'
+  }
+  return { os, arch: packedArchForOs(os) }
 }

@@ -7,8 +7,15 @@ import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
 import { belongsToAgentTask } from '@/utils/copilotAgent'
-import { normalizeCaseRow } from '@/utils/caseText'
-import { formatElapsed, capabilityLabel, capabilityActionDetail, channelLabel } from '@/utils/testingTasks'
+import { normalizeCaseRow, extractEngineSteps } from '@/utils/caseText'
+import {
+  formatElapsed,
+  capabilityLabel,
+  capabilityActionDetail,
+  channelLabel,
+  caseIdFromCaseRunId,
+  normalizeCaseStatus,
+} from '@/utils/testingTasks'
 import {
   mergeCheckpointCatalog,
   parseCheckpointCatalog,
@@ -20,12 +27,14 @@ import { COVERAGE_LABEL, COVERAGE_TONE } from '@/utils/caseCatalog'
 import {
   buildCaseRunGroups,
   emptyTaskHint,
+  groupsFromSlots,
   isLiveEngineStep,
   runningTaskId,
   TASK_STATUS_LABEL,
   taskIdForEngineStep,
   taskStatusLabel,
 } from '@/utils/caseRunTasks'
+import { resolveView } from '@/utils/viewRegistry'
 
 const props = defineProps({
   runId: { type: String, default: '' },
@@ -55,6 +64,9 @@ const lightboxSrc = ref('')
 const lightboxMeta = ref('')
 const verdictOpen = ref(false)
 const filmOpen = ref(false)
+const envelopeSkillId = ref('')
+const envelopeViewId = ref('')
+const envelopeSlots = ref(null)
 
 function isValidThumb(t) {
   if (!t || typeof t !== 'string') return false
@@ -127,6 +139,9 @@ function reset() {
   stepDrawerFocusUid.value = ''
   verdictOpen.value = false
   filmOpen.value = false
+  envelopeSkillId.value = ''
+  envelopeViewId.value = ''
+  envelopeSlots.value = null
 }
 
 function upsert(stepNo, patch) {
@@ -160,8 +175,24 @@ function applyTraceOntoStep(s, e) {
   if (e?.lane) s.lane = e.lane
 }
 
+function applyEnvelope(d) {
+  if (!d || typeof d !== 'object') return
+  if (d.skill_id) envelopeSkillId.value = d.skill_id
+  if (d.view_id) envelopeViewId.value = d.view_id
+  if (d.slots && typeof d.slots === 'object') envelopeSlots.value = d.slots
+}
+
+function phaseFields(d) {
+  const out = {}
+  if (d?.loop_phase) out.loop_phase = d.loop_phase
+  if (d?.case_step != null && d.case_step !== '') out.case_step = d.case_step
+  if (d?.case_step_index != null && d.case_step_index !== '') out.case_step_index = d.case_step_index
+  return out
+}
+
 function applyAgentEvent(d) {
   if (!d) return
+  applyEnvelope(d)
   const knowledge = knowledgeFrom(d)
   if (d.phase === 'start') {
     goal.value = d.goal || goal.value
@@ -171,11 +202,29 @@ function applyAgentEvent(d) {
     )
   }
   else if (d.phase === 'think') {
-    const checking = /正在校验/.test(String(d.summary || ''))
+    const checking = /正在校验/.test(String(d.summary || d.thought || ''))
     upsert(d.step, {
       status: checking ? 'checking' : 'thinking',
-      thought: d.summary || (checking ? '正在校验…' : '正在看图决策…'),
+      thought: d.thought || d.summary || (checking ? '正在校验…' : '正在看图决策…'),
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
+      ...(knowledge ? { knowledge } : {}),
+      ...(d.lane ? { lane: d.lane } : {}),
+    })
+    if (d.step) activeStep.value = d.step
+  }
+  else if (d.phase === 'act') {
+    const action = typeof d.action === 'string'
+      ? { capability_id: d.action }
+      : (d.action && typeof d.action === 'object' ? d.action : {})
+    const cap = action.capability_id || d.capability_id || ''
+    upsert(d.step, {
+      thought: d.thought,
+      status: d.status,
+      result_status: d.result_status || d.status,
+      action,
+      summary: d.summary,
+      thumb: normalizeThumb(d.thumb),
+      ...(cap ? { cap } : {}),
       ...(knowledge ? { knowledge } : {}),
       ...(d.lane ? { lane: d.lane } : {}),
     })
@@ -232,12 +281,17 @@ function applyAgentEvent(d) {
     })
   }
   else if (d.phase === 'done') {
-    overall.value = d.overall || ''
+    const st = normalizeCaseStatus(d.status || '')
+    const ov = String(d.overall || '').trim()
+    const ovStatus = normalizeCaseStatus(ov)
+    overall.value = (st && st !== 'unknown') ? st : ((ovStatus && ovStatus !== 'unknown') ? ovStatus : overall.value)
     finished.value = true
     if (d.summary) finalSummary.value = d.summary
+    else if (ov && ovStatus === 'unknown') finalSummary.value = ov
     if (d.failure_label) failureLabel.value = d.failure_label
     if (d.failure_category) failureCategory.value = d.failure_category
   }
+  if (d.step) upsert(d.step, phaseFields(d))
 }
 
 function applyPlanEvents(evs) {
@@ -257,6 +311,7 @@ function applyPlanEvents(evs) {
       lane: e.lane || '',
       action: e.plan_event ? { capability_id: e.capability_id, params: e.plan_event.params } : null,
       ...(knowledge ? { knowledge } : {}),
+      ...phaseFields(e),
       ...(recId ? {
         recoverySummary: e.summary || '',
         recovery: rec || null,
@@ -322,28 +377,51 @@ async function backfill(runId) {
   if (!runId) return
   let usedAgent = false
   let caseElapsed = 0
-  try {
-    const res = await getAgentSteps(runId)
-    const evs = res?.data?.events || []
-    if (evs.length) {
-      evs.forEach(applyAgentEvent)
-      usedAgent = true
-    }
-  } catch (_) { /* noop */ }
+  const ids = [runId]
+  const batch = String(runId).includes('::') ? String(runId).split('::')[0] : ''
+  if (batch && batch !== runId) ids.push(batch)
+  for (const id of ids) {
+    try {
+      const res = await getAgentSteps(id)
+      const data = res?.data || {}
+      applyEnvelope(data)
+      const evs = data.events || []
+      if (evs.length) {
+        evs.forEach(applyAgentEvent)
+        usedAgent = true
+        break
+      }
+    } catch (_) { /* noop */ }
+  }
   try {
     const res = await getCaseRunnerTraceDetail(runId)
     const d = res?.data || {}
+    applyEnvelope(d)
     const rp = d.report_payload && typeof d.report_payload === 'object' ? d.report_payload : {}
     const plan = d.plan_payload && typeof d.plan_payload === 'object' ? d.plan_payload : {}
     goal.value = goal.value || d.goal || rp.goal || plan.goal || d.case_name || props.caseGoal || ''
     const fromPlan = parseCheckpointCatalog(plan.checkpoints || rp.checkpoints || d.checkpoints)
     if (fromPlan.length) checkpoints.value = mergeCheckpointCatalog(checkpoints.value, fromPlan)
-    overall.value = d.overall_status || overall.value || ''
-    finished.value = true
-    caseElapsed = Number(d.elapsed_ms) || 0
-    const evs = d.event_results || d.events || []
+    const caseId = String(caseIdFromCaseRunId(runId) || '').split('::')[0]
+    const caseRow = (Array.isArray(d.cases) ? d.cases : []).find((c) => String(c.case_id || '') === caseId)
+    const caseStatus = normalizeCaseStatus(caseRow?.status || d.case_status || '')
+    const overallStatus = normalizeCaseStatus(d.overall_status || '')
+    const settledStatus = ['pass', 'fail', 'blocked', 'declined', 'skipped', 'cancelled', 'untestable', 'unverifiable', 'unexecutable', 'done']
+    if (settledStatus.includes(overallStatus)) {
+      overall.value = overallStatus
+    } else if (settledStatus.includes(caseStatus)) {
+      overall.value = caseStatus
+    }
+    // trace 接口在任务仍 running 时就会 200，不能把「查到记录」当成用例结束
+    const caseTerminal = ['pass', 'fail', 'blocked', 'declined', 'skipped', 'cancelled', 'untestable', 'unverifiable', 'unexecutable', 'done'].includes(caseStatus)
+    if (!finished.value) {
+      finished.value = Boolean(d.agent_finished) || caseTerminal
+    }
+    caseElapsed = Number(d.elapsed_ms || caseRow?.elapsed_ms) || 0
+    const evs = d.event_results || (Array.isArray(d.events) ? d.events : [])
     if (!usedAgent) {
-      applyPlanEvents(Array.isArray(evs) ? evs : [])
+      const engine = extractEngineSteps(props.caseSpec || d)
+      applyPlanEvents(engine.length ? engine : (Array.isArray(evs) ? evs : []))
     } else {
       (evs || []).forEach((e, i) => {
         const stepNo = Number(e.seq ?? i + 1)
@@ -360,10 +438,12 @@ async function backfill(runId) {
             elapsed,
             thumb: thumb || undefined,
             lane: e.lane || '',
+            ...phaseFields(e),
           })
           return
         }
         applyTraceOntoStep(s, e)
+        Object.assign(s, phaseFields(e))
         if (thumb && !isValidThumb(s.thumb)) s.thumb = thumb
         if (elapsed > 0 && !(Number(s.elapsed) > 0)) s.elapsed = elapsed
         const rec = e.vlm_meta?.recovery
@@ -397,7 +477,7 @@ const onWs = (res) => {
   const d = res.data || {}
   if (!belongsToAgentTask(d, props.runId)) return
   applyAgentEvent(d)
-  if (d.phase === 'step' || d.phase === 'result' || d.phase === 'think') scrollFilmToActive()
+  if (d.phase === 'step' || d.phase === 'result' || d.phase === 'think' || d.phase === 'act') scrollFilmToActive()
   if (d.phase === 'done') scrollBottom()
 }
 
@@ -467,18 +547,37 @@ const coverageGaps = computed(() => {
   ))
 })
 
-const runGroups = computed(() => buildCaseRunGroups({
-  spec: spec.value,
-  coverage: props.caseCoverage,
-  engineSteps: steps.value,
-  finished: caseSettled.value,
-  live: props.live && !caseSettled.value,
-  envProfile: props.envProfile,
-  envLabel: props.envLabel,
-  envAlign: props.envAlign,
-  platform: props.platform,
-}))
+const resolvedView = computed(() => resolveView(envelopeViewId.value))
+const hasSlotTree = computed(() => {
+  const slots = envelopeSlots.value
+  if (!slots || typeof slots !== 'object') return false
+  return ['prep', 'ops', 'checks'].some((k) => Array.isArray(slots[k]) && slots[k].length)
+})
+
+const runGroups = computed(() => {
+  const view = envelopeViewId.value ? resolvedView.value : ''
+  if (view === 'case-three-column' && hasSlotTree.value) {
+    return groupsFromSlots(envelopeSlots.value)
+  }
+  if (view === 'job-timeline' || view === 'flow-doc') return []
+  return buildCaseRunGroups({
+    spec: spec.value,
+    coverage: props.caseCoverage,
+    engineSteps: steps.value,
+    finished: caseSettled.value,
+    live: props.live && !caseSettled.value,
+    envProfile: props.envProfile,
+    envLabel: props.envLabel,
+    envAlign: props.envAlign,
+    platform: props.platform,
+  })
+})
 const hasRunTree = computed(() => runGroups.value.some((g) => g.tasks.length))
+const showThreeColumn = computed(() => {
+  const ids = new Set(runGroups.value.map((g) => g.id))
+  return hasRunTree.value && (ids.has('ops') || ids.has('checks'))
+})
+const treeTitle = computed(() => (showThreeColumn.value ? '前置 / 操作 / 校验' : '用例步骤'))
 const liveTaskId = computed(() => runningTaskId(runGroups.value, steps.value, {
   finished: caseSettled.value,
   live: props.live && !caseSettled.value,
@@ -503,6 +602,17 @@ const verdictTone = computed(() => {
 watch(liveTaskId, (id) => {
   if (id) openTaskId.value = id
 }, { immediate: true })
+
+const failTaskId = computed(() => {
+  for (const g of runGroups.value) {
+    const hit = (g.tasks || []).find((t) => t.status === 'fail')
+    if (hit) return hit.id
+  }
+  return ''
+})
+watch(failTaskId, (id) => {
+  if (id && !liveTaskId.value) openTaskId.value = id
+})
 
 function toggleTask(id) {
   openTaskId.value = openTaskId.value === id ? '' : id
@@ -856,13 +966,13 @@ defineExpose({ goal, overall, finished })
     <section v-if="runId || steps.length || hasRunTree" class="et-log-block" :class="{ open: stepsOpen }">
       <button type="button" class="et-log-head" @click="stepsOpen = !stepsOpen">
         <span class="et-log-head-l">
-          用例步骤
+          {{ treeTitle }}
           <em v-if="coverageHeadLabel" class="cls" :class="COVERAGE_TONE[coverageCls] || ''">{{ coverageHeadLabel }}</em>
         </span>
         <span>{{ stepsOpen ? '收起' : (hasRunTree ? '展开任务' : `展开 ${steps.length} 步`) }}</span>
       </button>
-      <div v-show="stepsOpen" ref="scrollEl" class="et-timeline">
-        <template v-if="hasRunTree">
+      <div v-show="stepsOpen" ref="scrollEl" class="et-timeline" :class="{ cols: showThreeColumn }">
+        <div v-if="hasRunTree" class="crt-tree" :class="{ cols: showThreeColumn }">
           <div v-for="g in runGroups" :key="g.id" class="crt-group" :class="g.status">
             <div class="crt-group-head">
               <span v-if="g.status === 'run'" class="crt-spin sm" :title="g.runLabel || '执行中'" />
@@ -882,7 +992,7 @@ defineExpose({ goal, overall, finished })
                 <span class="crt-chev" :class="{ on: openTaskId === task.id }">›</span>
                 <span v-if="task.status === 'run'" class="crt-spin sm" title="执行中" />
                 <span v-else class="crt-mark" :class="task.status" :title="taskStatusLabel(task)" />
-                <span class="crt-kind">{{ task.kind === 'prep' ? '前置' : task.kind === 'do' ? '操作' : '校验' }}</span>
+                <span v-if="!showThreeColumn" class="crt-kind">{{ task.kind === 'prep' ? '前置' : task.kind === 'do' ? '操作' : '校验' }}</span>
                 <span class="crt-title">{{ task.title }}</span>
                 <span class="crt-st">
                   <span v-if="task.gapTag" class="crt-gap" :title="task.msg || task.gapTag">{{ task.gapTag }}</span>
@@ -964,7 +1074,7 @@ defineExpose({ goal, overall, finished })
               </div>
             </div>
           </div>
-        </template>
+        </div>
         <template v-else>
           <div v-if="!steps.length" class="et-empty">暂无步骤（运行中会实时出现，或该 run 无明细）</div>
           <div
@@ -1466,6 +1576,33 @@ defineExpose({ goal, overall, finished })
 @keyframes et-spin { to { transform: rotate(360deg); } }
 
 .crt-group { border-top: 1px solid #e5e7eb; }
+.crt-tree.cols {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.crt-tree.cols .crt-group {
+  border-top: none;
+  border-right: 1px solid #e5e7eb;
+  min-width: 0;
+  overflow: auto;
+}
+.crt-tree.cols .crt-group:last-child { border-right: none; }
+.crt-tree.cols .crt-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  border-bottom: 1px solid #e5e7eb;
+  padding-top: 10px;
+}
+@media (max-width: 900px) {
+  .crt-tree.cols { grid-template-columns: 1fr; }
+  .crt-tree.cols .crt-group { border-right: none; border-bottom: 1px solid #e5e7eb; }
+}
 .crt-group.run { background: #f8fafc; }
 .crt-group-head {
   display: flex;
@@ -1595,6 +1732,11 @@ defineExpose({ goal, overall, finished })
   width: 100%;
   padding: 8px 10px;
   box-sizing: border-box;
+}
+.et-timeline.cols {
+  overflow: hidden;
+  display: flex;
+  padding: 0;
 }
 .et-empty { color: #9ca3af; font-size: 13px; padding: 24px; text-align: center; }
 .et-step {

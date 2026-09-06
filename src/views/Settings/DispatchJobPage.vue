@@ -1,4 +1,5 @@
 <script setup>
+/** 技能 view_id=job-timeline：按 LLM job 平铺的调用记录。未知 view 也回退到这类时间线。 */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'

@@ -8,6 +8,43 @@ function stripNumberPrefix(s) {
   return t
 }
 
+/** 执行事件对象混进 steps 时，不能 String(obj) 成 [object Object]。 */
+export function looksLikeEngineStep(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+  if (item.capability_id || item.executor_used) return true
+  return item.seq != null && item.status && Object.prototype.hasOwnProperty.call(item, 'summary')
+}
+
+export function caseLineText(item) {
+  if (item == null || item === '') return ''
+  if (typeof item === 'string' || typeof item === 'number') return String(item).trim()
+  if (Array.isArray(item)) return item.map(caseLineText).filter(Boolean).join('\n')
+  if (typeof item === 'object') {
+    if (looksLikeEngineStep(item)) return ''
+    for (const k of ['text', 'title', 'step', 'content', 'name', 'label']) {
+      const v = item[k]
+      if (typeof v === 'string' && v.trim()) return v.trim()
+    }
+    return ''
+  }
+  return String(item).trim()
+}
+
+export function extractEngineSteps(row = {}) {
+  if (Array.isArray(row.engine_steps) && row.engine_steps.length) return row.engine_steps
+  const steps = Array.isArray(row.steps) ? row.steps : []
+  const leaked = steps.filter(looksLikeEngineStep)
+  if (leaked.length && (leaked.length === steps.length || leaked.length >= 2)) return leaked
+  return []
+}
+
+function specLinesFromList(list) {
+  if (!Array.isArray(list) || !list.length) return []
+  const leaked = list.filter(looksLikeEngineStep)
+  if (leaked.length === list.length || leaked.length >= Math.max(2, list.length * 0.6)) return []
+  return list.map(caseLineText).map((t) => stripNumberPrefix(t)).filter(Boolean)
+}
+
 /** 执行结果行与缓存用例行字段名不一致时统一结构 */
 export function normalizeCaseRow(row) {
   const r = row || {}
@@ -18,17 +55,20 @@ export function normalizeCaseRow(row) {
     || (typeof r.expected === 'string' ? r.expected : '')
   const stepFromList = Array.isArray(r.steps) ? r.steps : (Array.isArray(r.step_lines) ? r.step_lines : [])
   const expectedFromList = Array.isArray(r.expected) ? r.expected : (Array.isArray(r.expected_lines) ? r.expected_lines : [])
-  const stepList = stepFromList.length ? stepFromList : splitNumberedLines(stepsRaw)
-  const expectedList = expectedFromList.length ? expectedFromList : splitNumberedLines(expectedRaw)
+  const stepList = specLinesFromList(stepFromList)
+  const expectedList = specLinesFromList(expectedFromList)
+  const steps = stepList.length ? stepList : splitNumberedLines(stepsRaw)
+  const expected = expectedList.length ? expectedList : splitNumberedLines(expectedRaw)
   return {
     ...r,
-    steps: stepList,
-    expected: expectedList,
+    steps,
+    expected,
+    engine_steps: extractEngineSteps(r),
     step_nums: r.step_nums || [],
     expected_nums: r.expected_nums || [],
     expected_by_step: r.expected_by_step || {},
-    steps_raw: stepsRaw || (stepList.length ? stepList.map((t, i) => `${i + 1}. ${t}`).join('\n') : ''),
-    expected_raw: expectedRaw || (expectedList.length ? expectedList.map((t, i) => `${i + 1}. ${t}`).join('\n') : ''),
+    steps_raw: stepsRaw || (steps.length ? steps.map((t, i) => `${i + 1}. ${t}`).join('\n') : ''),
+    expected_raw: expectedRaw || (expected.length ? expected.map((t, i) => `${i + 1}. ${t}`).join('\n') : ''),
     precondition: r.precondition || r.precondition_raw || '',
   }
 }
@@ -75,10 +115,10 @@ export function caseFieldLines(row, { listKey, rawKey, numsKey }) {
     if (Array.isArray(nums) && nums.length === list.length) {
       return list.map((text, i) => ({
         num: Number(nums[i]) || i + 1,
-        text: stripNumberPrefix(text),
-      }))
+        text: stripNumberPrefix(caseLineText(text)),
+      })).filter((p) => p.text)
     }
-    return list.map((text, i) => ({ num: i + 1, text: stripNumberPrefix(text) }))
+    return list.map((text, i) => ({ num: i + 1, text: stripNumberPrefix(caseLineText(text)) })).filter((p) => p.text)
   }
   const raw = normalized?.[rawKey]
     || (typeof list === 'string' ? list : '')

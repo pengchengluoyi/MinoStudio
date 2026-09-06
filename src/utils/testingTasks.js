@@ -462,6 +462,7 @@ export function normalizeCase(raw = {}, taskId = '') {
     precondition: raw.precondition || raw.precondition_raw || '',
     steps: Array.isArray(raw.steps) ? raw.steps : [],
     expected: Array.isArray(raw.expected) ? raw.expected : [],
+    engine_steps: Array.isArray(raw.engine_steps) ? raw.engine_steps : [],
     steps_raw: raw.steps_raw || (typeof raw.steps === 'string' ? raw.steps : ''),
     expected_raw: raw.expected_raw || (typeof raw.expected === 'string' ? raw.expected : ''),
     platform: raw.platform || '',

@@ -25,7 +25,7 @@ class ManagementWebSocket {
     this.reconnectInterval = 5000 // 5秒重连
     this.messageQueue = []
     this.manualUrl = null // 🔥 手动设置的 URL
-    this.useRemoteHost = false // 🔥 缓存是否需要使用 miniorange.local
+    this.useRemoteHost = false // 🔥 缓存是否需要使用 mino.local
     this.reconnectTimer = null // 🔥 重连定时器引用
   }
 

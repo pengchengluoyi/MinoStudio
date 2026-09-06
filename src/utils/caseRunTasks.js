@@ -686,6 +686,49 @@ export function taskIdForEngineStep(groups, stepNo) {
   return ''
 }
 
+export function groupsFromSlots(slots) {
+  const bag = slots && typeof slots === 'object' ? slots : {}
+  const columns = [
+    { key: 'prep', id: 'prep', label: '前置', kind: 'prep', taskKind: 'prep' },
+    { key: 'ops', id: 'ops', label: '操作', kind: 'do', taskKind: 'do' },
+    { key: 'checks', id: 'checks', label: '校验', kind: 'check', taskKind: 'check' },
+  ]
+  const groups = []
+  for (const col of columns) {
+    const items = Array.isArray(bag[col.key]) ? bag[col.key] : []
+    if (!items.length) continue
+    const tasks = items.map((item, i) => {
+      const stepIds = Array.isArray(item?.step_ids) ? item.step_ids : []
+      const task = makeTask({
+        id: String(item?.id || `${col.id}-${i + 1}`),
+        kind: col.taskKind,
+        title: String(item?.title || col.label),
+        stepNum: Number(item?.step_num || 0),
+      })
+      task.cardNos = stepIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+      task.status = slotTaskStatus(item?.status)
+      return task
+    })
+    const group = makeGroup({ id: col.id, label: col.label, kind: col.kind, tasks })
+    group.status = groupStatus(group)
+    group.hint = groupHint(group)
+    group.runLabel = groupRunLabel(group)
+    groups.push(group)
+  }
+  return groups
+}
+
+function slotTaskStatus(raw) {
+  const k = String(raw || '').toLowerCase()
+  if (['fail', 'failed', 'give_up', 'declined'].includes(k)) return 'fail'
+  if (k === 'blocked') return 'blocked'
+  if (['running', 'thinking', 'checking', 'continue', 'ask_human'].includes(k)) return 'run'
+  if (['skipped', 'skip'].includes(k)) return 'skip'
+  if (['pass', 'done'].includes(k)) return 'done'
+  return 'queued'
+}
+
+
 export function buildCaseRunGroups({
   spec, coverage, engineSteps = [], finished = false, live = false,
   envProfile = '', envLabel = '', envAlign = null, platform = '',

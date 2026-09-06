@@ -3,7 +3,29 @@ const path = require('node:path')
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args)
 
+/** IPC 走 structured clone；Vue reactive Proxy 不能克隆，会报 "An object could not be cloned"。 */
+const ipcPayload = (value) => {
+  if (value === undefined || value === null) return value
+  return JSON.parse(JSON.stringify(value))
+}
+
+const fallbackHost = {
+  os: process.platform,
+  arch: process.platform === 'darwin' ? 'arm64' : 'x64',
+}
+let hostPlatform = fallbackHost
+try {
+  const sync = ipcRenderer.sendSync('host-platform')
+  if (sync?.os) {
+    hostPlatform = {
+      os: sync.os,
+      arch: sync.os === 'darwin' ? 'arm64' : 'x64',
+    }
+  }
+} catch { /* main not ready; UA/process.arch fallback */ }
+
 contextBridge.exposeInMainWorld('electronAPI', {
+  hostPlatform,
   minimize: () => ipcRenderer.send('window-min'),
   maximize: () => ipcRenderer.send('window-max'),
   close: () => ipcRenderer.send('window-close'),
@@ -15,12 +37,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   scoutInstalledVersion: () => invoke('scout-installed-version'),
   scoutStart: () => invoke('scout-start'),
+  scoutStartStatus: () => invoke('scout-start-status'),
   scoutStop: () => invoke('scout-stop'),
   scoutRestart: () => invoke('scout-restart'),
-  scoutDownload: (payload) => invoke('scout-download', payload),
-  scoutInstall: (payload) => invoke('scout-install', payload),
-  scoutWriteConfig: (payload) => invoke('scout-write-config', payload),
+  scoutDownload: (payload) => invoke('scout-download', ipcPayload(payload)),
+  scoutInstall: (payload) => invoke('scout-install', ipcPayload(payload)),
+  scoutSetup: (payload) => invoke('scout-setup', ipcPayload(payload)),
+  scoutSetupStatus: () => invoke('scout-setup-status'),
+  scoutInstalledLayers: () => invoke('scout-installed-layers'),
+  scoutPlanUpdate: (payload) => invoke('scout-plan-update', ipcPayload(payload)),
+  scoutUninstall: () => invoke('scout-uninstall'),
+  scoutWriteConfig: (payload) => invoke('scout-write-config', ipcPayload(payload)),
   scoutFetchJson: (url) => invoke('scout-fetch-json', url),
+  onScoutSetupProgress: (callback) => {
+    const listener = (_event, value) => callback(value)
+    ipcRenderer.on('scout-setup-progress', listener)
+    return () => ipcRenderer.removeListener('scout-setup-progress', listener)
+  },
+  onScoutStartProgress: (callback) => {
+    const listener = (_event, value) => callback(value)
+    ipcRenderer.on('scout-start-progress', listener)
+    return () => ipcRenderer.removeListener('scout-start-progress', listener)
+  },
   onScoutDownloadProgress: (callback) => {
     const listener = (_event, value) => callback(value)
     ipcRenderer.on('scout-download-progress', listener)

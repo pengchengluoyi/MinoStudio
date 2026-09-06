@@ -1,7 +1,7 @@
 {
   "name": "mino-studio",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.4",
   "main": "dist-electron/main.js",
   "description": "Mino Studio — desktop testing workbench",
   "author": "pengchengluoyi@126.com",
@@ -10,7 +10,8 @@
     "dev:web": "vite --mode web --strictPort",
     "postinstall": "node scripts/ensure-electron.mjs",
     "build": "vite build && electron-builder",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:scout-layers": "node scripts/check-scout-layers.cjs"
   },
   "engines": {
     "node": ">=20 <25"

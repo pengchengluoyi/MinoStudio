@@ -337,6 +337,13 @@
   box-shadow: 0 6px 14px color-mix(in srgb, var(--brand, var(--settings-primary)) 16%, transparent);
 }
 
+.settings-action-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .settings-action-arrow {
   display: inline-grid;
   place-items: center;

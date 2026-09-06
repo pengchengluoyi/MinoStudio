@@ -13,9 +13,76 @@ const execFileAsync = promisify(execFile)
 
 const NEXUS_URL = String(process.env.VITE_NEXUS_URL || 'http://mino.local:10104').replace(/\/$/, '')
 
+/** Same three zips Scout CI publishes. Darwin is always arm64. */
+const packedArchForOs = (os) => (os === 'darwin' ? 'arm64' : 'x64')
+const hostPlatform = () => ({ os: process.platform, arch: packedArchForOs(process.platform) })
+
+if (process.platform === 'darwin') {
+  app.commandLine.appendSwitch(
+    'disable-features',
+    'MacWebContentsOcclusion,CalculateNativeWinOcclusion,AutofillEnableAccountWalletStorage',
+  )
+}
+
 let mainWindow = null
 let tray = null
+let trayMenu = null
 let isQuitting = false
+
+const SETUP_STAGES = {
+  download: { from: 0, to: 55, label: '下载安装包' },
+  unzip: { from: 55, to: 75, label: '解压' },
+  config: { from: 75, to: 88, label: '写入配置' },
+  start: { from: 88, to: 100, label: '启动 Scout' },
+}
+
+let scoutSetupJob = {
+  active: false,
+  stage: '',
+  label: '',
+  percent: 0,
+  error: '',
+}
+
+const snapshotSetupJob = () => ({ ...scoutSetupJob })
+
+const emitSetupProgress = (patch = {}) => {
+  Object.assign(scoutSetupJob, patch)
+  const payload = snapshotSetupJob()
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send('scout-setup-progress', payload) } catch { /* gone */ }
+  }
+}
+
+const START_STAGES = {
+  register: '写入启动项',
+  launch: '通知系统拉起',
+  wait: '等待进程就绪',
+}
+
+let scoutStartJob = {
+  active: false,
+  stage: '',
+  label: '',
+  error: '',
+  pid: null,
+}
+
+const snapshotStartJob = () => ({ ...scoutStartJob })
+
+const emitStartProgress = (patch = {}) => {
+  Object.assign(scoutStartJob, patch)
+  const payload = snapshotStartJob()
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send('scout-start-progress', payload) } catch { /* gone */ }
+  }
+}
+
+const mapStagePercent = (stage, local = 0) => {
+  const spec = SETUP_STAGES[stage] || SETUP_STAGES.download
+  const clamped = Math.max(0, Math.min(100, Number(local) || 0))
+  return Math.round(spec.from + (spec.to - spec.from) * (clamped / 100))
+}
 
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -74,6 +141,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: false,
       webviewTag: true,
     },
   })
@@ -118,7 +186,7 @@ function createTray() {
   }
 
   tray = new Tray(icon)
-  const contextMenu = Menu.buildFromTemplate([
+  trayMenu = Menu.buildFromTemplate([
     {
       label: '显示主窗口',
       click: () => {
@@ -150,11 +218,17 @@ function createTray() {
     },
   ])
   tray.setToolTip('Mino Studio')
-  tray.setContextMenu(contextMenu)
-  tray.on('click', () => {
+  const showMain = () => {
     if (mainWindow) mainWindow.show()
     else createWindow()
-  })
+  }
+  if (process.platform === 'darwin') {
+    tray.on('click', showMain)
+    tray.on('right-click', () => tray.popUpContextMenu(trayMenu))
+  } else {
+    tray.setContextMenu(trayMenu)
+    tray.on('click', showMain)
+  }
 }
 
 function initAutoUpdater() {
@@ -190,13 +264,18 @@ ipcMain.handle('select-file', async () => {
   return filePaths[0]
 })
 
+ipcMain.on('host-platform', (event) => {
+  event.returnValue = hostPlatform()
+})
+
 ipcMain.handle('get-runtime-status', async () => {
   const online = await checkUrl(`${NEXUS_URL}/sys/server_info`)
+  const host = hostPlatform()
   return {
     electron: {
       version: app.getVersion(),
-      platform: process.platform,
-      arch: process.arch,
+      platform: host.os,
+      arch: host.arch,
       online: true,
     },
     endpoints: [{ name: 'nexus', url: NEXUS_URL, online }],
@@ -259,6 +338,23 @@ const readScoutConfig = () => {
   }
 }
 
+/* Scout 的安装包是分层的 —— 决策逻辑在 ./scoutLayers.cjs（纯函数，好单测），
+   这里只做 fs 与 electron 的胶水。
+   刻意用 import 而不是 require：vite 打包主进程时不会跟进 require() 里的相对路径，
+   写成 require 的话这个模块不会进 bundle，打出来的 app 一启动就 MODULE_NOT_FOUND。 */
+import { parseLayersTxt, planScoutUpdate } from './scoutLayers.cjs'
+
+/** 读 <bin>/layers.txt。没装过返回 null。 */
+const readInstalledScoutLayers = () => {
+  try {
+    return parseLayersTxt(fs.readFileSync(path.join(scoutConfigDir(), 'bin', 'layers.txt'), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+const planScoutUpdateHere = (item = {}) => planScoutUpdate(item, readInstalledScoutLayers())
+
 const scoutBinCandidates = () => {
   const home = scoutConfigDir()
   return [
@@ -272,40 +368,26 @@ const scoutBinCandidates = () => {
 
 const scoutBin = () => scoutBinCandidates().find((p) => fs.existsSync(p)) || ''
 
-const scoutAppInstalled = () => {
-  const home = scoutConfigDir()
-  const localBins = [
-    ...scoutBinCandidates(),
-    path.join(home, 'app', 'pyproject.toml'),
-  ]
-  if (localBins.some((p) => fs.existsSync(p))) return true
-  if (process.platform === 'darwin') {
-    return [
-      '/Applications/MinoScout.app',
-      '/Applications/Mino Scout.app',
-      path.join(app.getPath('home'), 'Library', 'LaunchAgents', 'com.mino.scout.plist'),
-    ].some((p) => fs.existsSync(p))
-  }
-  if (process.platform === 'win32') {
-    const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean)
-    return roots.some((root) => (
-      fs.existsSync(path.join(root, 'MinoScout', 'MinoScout.exe'))
-      || fs.existsSync(path.join(root, 'Programs', 'MinoScout', 'MinoScout.exe'))
-    ))
-  }
-  return ['/usr/local/bin/minoscout', '/usr/bin/minoscout'].some((p) => fs.existsSync(p))
-}
+const scoutBinaryInstalled = () => Boolean(scoutBin())
+
+const scoutAppInstalled = () => scoutBinaryInstalled()
 
 const scoutUnixBin = () => scoutBin()
 
 const scoutWinBin = () => scoutBin()
 
 const spawnScoutDetached = (bin) => {
+  const env = { ...process.env }
+  const extraPath = '/opt/homebrew/bin:/usr/local/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+  env.PATH = env.PATH ? `${extraPath}:${env.PATH}` : extraPath
+  const browsers = path.join(scoutConfigDir(), 'bin', 'ms-playwright')
+  if (chromiumLooksInstalled(browsers)) env.PLAYWRIGHT_BROWSERS_PATH = browsers
   const child = spawn(bin, [], {
     cwd: scoutConfigDir(),
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
+    env,
   })
   child.unref()
   return { ok: true, method: 'detached', pid: child.pid }
@@ -313,6 +395,60 @@ const spawnScoutDetached = (bin) => {
 
 const scoutLaunchdPlist = () =>
   path.join(app.getPath('home'), 'Library', 'LaunchAgents', 'com.mino.scout.plist')
+
+const scoutLaunchdPath = () =>
+  '/opt/homebrew/bin:/usr/local/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin'
+
+const writeScoutLaunchdPlist = () => {
+  const bin = scoutUnixBin()
+  if (!bin) return ''
+  const plist = scoutLaunchdPlist()
+  const home = scoutConfigDir()
+  const logDir = path.join(app.getPath('home'), 'Library', 'Logs', 'MinoScout')
+  fs.mkdirSync(path.dirname(plist), { recursive: true })
+  fs.mkdirSync(logDir, { recursive: true })
+  const browsers = path.join(home, 'bin', 'ms-playwright')
+  const browserEnv = chromiumLooksInstalled(browsers)
+    ? `
+    <key>PLAYWRIGHT_BROWSERS_PATH</key>
+    <string>${browsers}</string>`
+    : ''
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mino.scout</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${bin}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${home}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${scoutLaunchdPath()}</string>
+    <key>HOME</key>
+    <string>${app.getPath('home')}</string>${browserEnv}
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>${path.join(logDir, 'scout.log')}</string>
+  <key>StandardErrorPath</key>
+  <string>${path.join(logDir, 'scout.err.log')}</string>
+</dict>
+</plist>
+`
+  fs.writeFileSync(plist, xml)
+  return plist
+}
 
 const scoutIsRunning = async () => {
   if (process.platform === 'darwin') {
@@ -345,51 +481,167 @@ const scoutIsRunning = async () => {
   return { running: false }
 }
 
-const startScoutService = async () => {
-  if (process.platform === 'darwin') {
-    const uid = typeof process.getuid === 'function' ? process.getuid() : ''
-    const target = uid !== '' ? `gui/${uid}/com.mino.scout` : 'com.mino.scout'
-    const plist = scoutLaunchdPlist()
-    try {
-      await execFileAsync('launchctl', ['kickstart', '-k', target], { timeout: 8000 })
-      return { ok: true, method: 'launchctl' }
-    } catch {
-      if (fs.existsSync(plist)) {
-        try {
-          await execFileAsync('launchctl', ['bootstrap', `gui/${uid}`, plist], { timeout: 8000 })
-        } catch { /* already bootstrapped */ }
-        try {
-          await execFileAsync('launchctl', ['kickstart', '-k', target], { timeout: 8000 })
-          return { ok: true, method: 'launchctl-bootstrap' }
-        } catch {
-          try {
-            await execFileAsync('launchctl', ['load', '-w', plist], { timeout: 8000 })
-            return { ok: true, method: 'launchctl-load' }
-          } catch { /* fall through */ }
-        }
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const waitUntilScoutRunning = async ({ timeoutMs = 15000, intervalMs = 400 } = {}) => {
+  const started = Date.now()
+  let last = { running: false }
+  while (Date.now() - started < timeoutMs) {
+    last = await scoutIsRunning()
+    if (last.running) return last
+    await sleep(intervalMs)
+  }
+  return last
+}
+
+const chmodTreeExecutable = (root) => {
+  if (!root || !fs.existsSync(root)) return
+  const walk = (dir) => {
+    let names = []
+    try { names = fs.readdirSync(dir) } catch { return }
+    for (const name of names) {
+      const p = path.join(dir, name)
+      let st
+      try { st = fs.lstatSync(p) } catch { continue }
+      if (st.isSymbolicLink()) continue
+      if (st.isDirectory()) walk(p)
+      else if (st.isFile()) {
+        try { fs.chmodSync(p, (st.mode | 0o111) & 0o777) } catch { /* ignore */ }
       }
     }
-    const bin = scoutUnixBin()
-    if (bin) return spawnScoutDetached(bin)
-    return { ok: false, error: '本机还没有执行器。请先下载安装。' }
   }
+  walk(root)
+}
+
+const prepareScoutPayload = async (root) => {
+  if (!root || !fs.existsSync(root)) return
+  chmodTreeExecutable(root)
+  if (process.platform === 'darwin') {
+    try { await execFileAsync('xattr', ['-cr', root], { timeout: 20000 }) } catch { /* ignore */ }
+  }
+}
+
+const startFailureHint = () => {
+  if (process.platform === 'darwin') {
+    return 'macOS 可能拦截了后台启动。系统设置 → 通用 → 登录项与扩展 里允许 mino-scout 后，再点启动。'
+  }
+  return '本机执行器没有真正跑起来。'
+}
+
+const chromiumLooksInstalled = (dir) => {
+  if (!dir || !fs.existsSync(dir)) return false
+  const walk = (current, depth) => {
+    if (depth > 6) return false
+    let names = []
+    try { names = fs.readdirSync(current) } catch { return false }
+    for (const name of names) {
+      const p = path.join(current, name)
+      const low = name.toLowerCase()
+      if (low === 'chrome' || low === 'chrome.exe' || low === 'chromium' || name.endsWith('.app')) {
+        return true
+      }
+      try {
+        if (fs.statSync(p).isDirectory() && walk(p, depth + 1)) return true
+      } catch { /* ignore */ }
+    }
+    return false
+  }
+  return walk(dir, 0)
+}
+
+const startScoutService = async ({ onStage } = {}) => {
+  const bin = scoutBin()
+  if (!bin) return { ok: false, error: '本机还没有执行器。请先下载安装。' }
+  try { fs.chmodSync(bin, 0o755) } catch { /* ignore */ }
+  const note = (stage) => {
+    onStage?.(stage)
+  }
+  if (process.platform === 'darwin') {
+    note('register')
+    const uid = typeof process.getuid === 'function' ? process.getuid() : ''
+    const target = uid !== '' ? `gui/${uid}/com.mino.scout` : 'com.mino.scout'
+    const plist = writeScoutLaunchdPlist() || scoutLaunchdPlist()
+    let method = 'launchctl'
+    note('launch')
+    try { await execFileAsync('launchctl', ['bootout', target], { timeout: 8000 }) } catch { /* not loaded */ }
+    try { await execFileAsync('launchctl', ['load', '-w', plist], { timeout: 8000 }) } catch { /* already loaded */ }
+    try {
+      await execFileAsync('launchctl', ['bootstrap', `gui/${uid}`, plist], { timeout: 8000 })
+      method = 'launchctl-bootstrap'
+    } catch { /* macOS often returns I/O error if already registered */ }
+    try {
+      await execFileAsync('launchctl', ['kickstart', '-k', target], { timeout: 8000 })
+      method = 'launchctl'
+    } catch { /* RunAtLoad may already have started it */ }
+    note('wait')
+    let live = await waitUntilScoutRunning({ timeoutMs: 12000 })
+    if (!live.running) {
+      spawnScoutDetached(bin)
+      method = 'detached'
+      live = await waitUntilScoutRunning({ timeoutMs: 8000 })
+    }
+    if (live.running) return { ok: true, method, pid: live.pid || null }
+    return { ok: false, error: startFailureHint() }
+  }
+  note('launch')
   if (process.platform === 'win32') {
     try {
       await execFileAsync('schtasks', ['/Run', '/TN', 'Mino Scout'], { timeout: 8000, windowsHide: true })
-      return { ok: true, method: 'schtasks' }
     } catch {
-      const bin = scoutWinBin()
-      if (bin) return spawnScoutDetached(bin)
-      return { ok: false, error: '本机还没有执行器。请先下载安装。' }
+      spawnScoutDetached(bin)
     }
+    note('wait')
+    const live = await waitUntilScoutRunning({ timeoutMs: 12000 })
+    if (live.running) return { ok: true, method: 'schtasks', pid: live.pid || null }
+    return { ok: false, error: startFailureHint() }
   }
   try {
     await execFileAsync('systemctl', ['--user', 'start', 'mino-scout.service'], { timeout: 8000 })
-    return { ok: true, method: 'systemd' }
   } catch {
-    const bin = scoutUnixBin()
-    if (bin) return spawnScoutDetached(bin)
-    return { ok: false, error: '本机还没有执行器。请先下载安装。' }
+    spawnScoutDetached(bin)
+  }
+  note('wait')
+  const live = await waitUntilScoutRunning({ timeoutMs: 12000 })
+  if (live.running) return { ok: true, method: 'systemd', pid: live.pid || null }
+  return { ok: false, error: startFailureHint() }
+}
+
+const runStartJob = async () => {
+  emitStartProgress({
+    active: true,
+    stage: 'register',
+    label: START_STAGES.register,
+    error: '',
+    pid: null,
+  })
+  try {
+    const result = await startScoutService({
+      onStage: (stage) => emitStartProgress({
+        active: true,
+        stage,
+        label: START_STAGES[stage] || stage,
+        error: '',
+      }),
+    })
+    if (!result?.ok) throw new Error(result?.error || '启动失败')
+    emitStartProgress({
+      active: false,
+      stage: 'done',
+      label: '已启动',
+      error: '',
+      pid: result.pid || null,
+    })
+    return result
+  } catch (e) {
+    const error = e.message || String(e)
+    emitStartProgress({
+      active: false,
+      stage: 'error',
+      label: '',
+      error,
+      pid: null,
+    })
+    return { ok: false, error }
   }
 }
 
@@ -400,7 +652,14 @@ const fetchJsonUrl = (url) => new Promise((resolve, reject) => {
       return
     }
     const lib = u.startsWith('https:') ? https : http
-    const req = lib.get(u, { headers: { Accept: 'application/json', 'User-Agent': 'MinoStudio' } }, (res) => {
+    const req = lib.get(u, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'MinoStudio',
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+      },
+    }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume()
         go(new URL(res.headers.location, u).href, hops + 1)
@@ -503,7 +762,16 @@ const downloadToFile = (url, dest, onProgress) => new Promise((resolve, reject) 
       res.on('data', (chunk) => {
         received += chunk.length
         hash.update(chunk)
-        if (total) onProgress({ received, total, percent: Math.round((received / total) * 100) })
+        if (typeof onProgress !== 'function') return
+        if (total) {
+          onProgress({ received, total, percent: Math.round((received / total) * 100) })
+          return
+        }
+        onProgress({
+          received,
+          total: 0,
+          percent: Math.min(95, 8 + Math.round(received / (2 * 1024 * 1024))),
+        })
       })
       res.pipe(out)
       out.on('finish', () => {
@@ -518,20 +786,21 @@ const downloadToFile = (url, dest, onProgress) => new Promise((resolve, reject) 
 
 ipcMain.handle('scout-installed-version', async () => {
   const config = readScoutConfig()
-  const appInstalled = scoutAppInstalled()
+  const appInstalled = scoutBinaryInstalled()
   const live = await scoutIsRunning()
   return {
-    installed: appInstalled || !!config,
+    installed: appInstalled,
     appInstalled,
     running: !!live.running,
     pid: live.pid || null,
     configPath: scoutConfigPath(),
-    version: config?.version || null,
+    version: appInstalled ? (config?.version || null) : null,
     nexusUrl: config?.nexus_url || null,
-    scoutId: config?.scout_id || null,
+    scoutId: appInstalled ? (config?.scout_id || null) : null,
     studioId: loadStudioId(),
     hasToken: Boolean(config?.token),
     tokenMasked: maskSecret(config?.token),
+    setup: snapshotSetupJob(),
   }
 })
 
@@ -550,13 +819,37 @@ ipcMain.handle('scout-restart', async () => {
 
 ipcMain.handle('scout-start', async () => {
   try {
+    if (scoutSetupJob.active) {
+      return { ok: false, error: '正在安装 Scout，请稍后再启动' }
+    }
+    if (scoutStartJob.active) {
+      return { ok: true, accepted: true, start: snapshotStartJob() }
+    }
     const live = await scoutIsRunning()
     if (live.running) return { ok: true, already: true, pid: live.pid || null }
-    return await startScoutService()
+    emitStartProgress({
+      active: true,
+      stage: 'register',
+      label: START_STAGES.register,
+      error: '',
+      pid: null,
+    })
+    runStartJob().catch((e) => {
+      emitStartProgress({
+        active: false,
+        stage: 'error',
+        label: '',
+        error: e.message || String(e),
+        pid: null,
+      })
+    })
+    return { ok: true, accepted: true, start: snapshotStartJob() }
   } catch (e) {
     return { ok: false, error: e.message || String(e) }
   }
 })
+
+ipcMain.handle('scout-start-status', async () => snapshotStartJob())
 
 const killScoutByPgrep = async () => {
   if (process.platform === 'win32') return { ok: false }
@@ -628,22 +921,243 @@ ipcMain.handle('scout-stop', async () => {
   }
 })
 
+const persistScoutConfig = (payload = {}) => {
+  fs.mkdirSync(scoutConfigDir(), { recursive: true })
+  const prev = readScoutConfig() || {}
+  const next = {
+    ...prev,
+    nexus_url: String(payload.nexus_url || prev.nexus_url || NEXUS_URL).replace(/\/$/, ''),
+    token: payload.token || prev.token || '',
+    version: payload.version || prev.version || '',
+    studio_id: loadStudioId(),
+    updated_at: new Date().toISOString(),
+  }
+  fs.writeFileSync(scoutConfigPath(), `${JSON.stringify(next, null, 2)}\n`)
+  return { ok: true, path: scoutConfigPath() }
+}
+
+const rmIfExists = (target) => {
+  try { fs.rmSync(target, { recursive: true, force: true }) } catch { /* ignore */ }
+}
+
+const unloadScoutService = async () => {
+  try { await stopScoutService() } catch { /* not running */ }
+  if (process.platform === 'darwin') {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : ''
+    const target = uid !== '' ? `gui/${uid}/com.mino.scout` : 'com.mino.scout'
+    try { await execFileAsync('launchctl', ['bootout', target], { timeout: 8000 }) } catch { /* unloaded */ }
+    rmIfExists(scoutLaunchdPlist())
+    return
+  }
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('schtasks', ['/Delete', '/TN', 'Mino Scout', '/F'], { timeout: 8000, windowsHide: true })
+    } catch { /* no task */ }
+    return
+  }
+  try {
+    await execFileAsync('systemctl', ['--user', 'disable', '--now', 'mino-scout.service'], { timeout: 8000 })
+  } catch { /* no unit */ }
+}
+
+const runScoutSetup = async (payload = {}) => {
+  if (scoutSetupJob.active) {
+    return { ok: false, error: '安装正在进行', setup: snapshotSetupJob() }
+  }
+  if (scoutStartJob.active) {
+    return { ok: false, error: '正在启动 Scout，请稍后再安装' }
+  }
+  const plan = planScoutUpdateHere(payload)
+  if (plan.mode !== 'up-to-date') {
+    for (const step of plan.steps) {
+      if (!/^https?:\/\//i.test(step.url)) {
+        return { ok: false, error: '没有可用的安装包' }
+      }
+    }
+  }
+
+  emitSetupProgress({
+    active: true,
+    stage: 'download',
+    label: SETUP_STAGES.download.label,
+    percent: 0,
+    error: '',
+  })
+
+  try {
+    const downloadDir = path.join(app.getPath('userData'), 'scout-downloads')
+    const unpackRoot = path.join(scoutConfigDir(), 'package')
+    const multi = plan.steps.length > 1
+    const totalBytes = plan.steps.reduce((n, s) => n + (s.bytes || 0), 0)
+    const staged = []
+    let doneBytes = 0
+    let lastDest = ''
+    let lastRoot = ''
+
+    for (const step of plan.steps) {
+      const tag = step.layer ? `${SETUP_STAGES.download.label}（${step.layer} 层）` : SETUP_STAGES.download.label
+      const filename = String(step.filename || 'scout-installer').replace(/[^A-Za-z0-9._-]/g, '_')
+      const dest = path.join(downloadDir, filename)
+      const downloaded = await downloadToFile(step.url, dest, (p) => {
+        // 多层时按字节加权，进度条才不会每层从 0 重来。
+        const percent = totalBytes
+          ? Math.round(((doneBytes + (p.received || 0)) / totalBytes) * 100)
+          : p.percent
+        emitSetupProgress({
+          stage: 'download',
+          label: tag,
+          percent: mapStagePercent('download', Math.min(100, percent)),
+        })
+      })
+      const expected = String(step.sha256 || '').trim().toLowerCase()
+      if (expected && downloaded.sha256 !== expected) {
+        rmIfExists(dest)
+        throw new Error(`sha256 mismatch: got ${downloaded.sha256}`)
+      }
+      doneBytes += downloaded.bytes || step.bytes || 0
+
+      emitSetupProgress({
+        stage: 'unzip',
+        label: SETUP_STAGES.unzip.label,
+        percent: mapStagePercent('unzip', 8),
+      })
+      // unzipScoutArchive 会先清空目标目录，所以多层必须各自解到子目录里，
+      // 否则后一层会把前一层刚解出来的东西抹掉。
+      const unpackDest = multi ? path.join(unpackRoot, step.layer || 'combined') : unpackRoot
+      await unzipScoutArchive(dest, unpackDest)
+      const root = findInstallRoot(unpackDest)
+      await prepareScoutPayload(root)
+      staged.push({ step, root })
+      lastDest = dest
+      lastRoot = root
+    }
+
+    emitSetupProgress({
+      stage: 'unzip',
+      label: SETUP_STAGES.unzip.label,
+      percent: mapStagePercent('unzip', 55),
+    })
+
+    emitSetupProgress({
+      stage: 'config',
+      label: SETUP_STAGES.config.label,
+      percent: mapStagePercent('config', 20),
+    })
+    persistScoutConfig({
+      nexus_url: payload.nexus_url || NEXUS_URL,
+      token: payload.token || '',
+      version: payload.version || '',
+    })
+    emitSetupProgress({
+      stage: 'config',
+      label: SETUP_STAGES.config.label,
+      percent: mapStagePercent('config', 100),
+    })
+
+    emitSetupProgress({
+      stage: 'unzip',
+      label: SETUP_STAGES.unzip.label,
+      percent: mapStagePercent('unzip', 70),
+    })
+    // 顺序就是 planScoutUpdate 给的 runtime → app → browser。app 层的 requires_runtime
+    // 闸门要求 runtime 先落地，颠倒过来安装脚本会拒绝并退出非 0。
+    for (const { root } of staged) {
+      await runScoutInstallHelper(root)
+    }
+    await prepareScoutPayload(path.join(scoutConfigDir(), 'bin'))
+    emitSetupProgress({
+      stage: 'unzip',
+      label: SETUP_STAGES.unzip.label,
+      percent: mapStagePercent('unzip', 100),
+    })
+
+    emitSetupProgress({
+      stage: 'start',
+      label: SETUP_STAGES.start.label,
+      percent: mapStagePercent('start', 25),
+    })
+    const started = await startScoutService()
+    if (!started?.ok) {
+      throw new Error(started?.error || '启动失败')
+    }
+    emitSetupProgress({
+      stage: 'start',
+      label: SETUP_STAGES.start.label,
+      percent: mapStagePercent('start', 100),
+    })
+    emitSetupProgress({
+      active: false,
+      stage: 'done',
+      label: '已启动',
+      percent: 100,
+      error: '',
+    })
+    return {
+      ok: true,
+      launched: true,
+      path: lastDest,
+      unpacked: lastRoot,
+      pid: started.pid || null,
+      mode: plan.mode,
+      layers: plan.steps.map((s) => s.layer).filter(Boolean),
+      bytes: plan.bytes,
+    }
+  } catch (e) {
+    emitSetupProgress({
+      active: false,
+      error: e.message || String(e),
+    })
+    return { ok: false, error: e.message || String(e), setup: snapshotSetupJob() }
+  }
+}
+
 ipcMain.handle('scout-write-config', async (_event, payload = {}) => {
   try {
-    fs.mkdirSync(scoutConfigDir(), { recursive: true })
-    const prev = readScoutConfig() || {}
-    const next = {
-      ...prev,
-      nexus_url: String(payload.nexus_url || NEXUS_URL).replace(/\/$/, ''),
-      token: payload.token || prev.token || '',
-      version: payload.version || prev.version || '',
-      studio_id: loadStudioId(),
-      updated_at: new Date().toISOString(),
-    }
-    fs.writeFileSync(scoutConfigPath(), `${JSON.stringify(next, null, 2)}\n`)
-    return { ok: true, path: scoutConfigPath() }
+    return persistScoutConfig(payload)
   } catch (e) {
     return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('scout-setup-status', async () => snapshotSetupJob())
+
+ipcMain.handle('scout-setup', async (_event, payload = {}) => runScoutSetup(payload))
+
+/* 让界面在用户点之前就能说清"这次要下多少" —— 90 KB 还是 439 MB 是完全不同的决定。
+   主进程在真装的时候会重新算一遍 planScoutUpdate，不信渲染层传来的结论。 */
+ipcMain.handle('scout-installed-layers', async () => readInstalledScoutLayers())
+
+ipcMain.handle('scout-plan-update', async (_event, payload = {}) => planScoutUpdateHere(payload))
+
+ipcMain.handle('scout-uninstall', async () => {
+  if (scoutSetupJob.active) {
+    return { ok: false, error: '安装正在进行，请稍后再卸载' }
+  }
+  if (scoutStartJob.active) {
+    return { ok: false, error: '正在启动 Scout，请稍后再卸载' }
+  }
+  try {
+    const live = await scoutIsRunning()
+    if (live.running) {
+      return { ok: false, error: '请先停止 Scout，再卸载' }
+    }
+    await unloadScoutService()
+    const home = scoutConfigDir()
+    rmIfExists(path.join(home, 'package'))
+    rmIfExists(path.join(home, 'bin'))
+    rmIfExists(path.join(home, 'venv'))
+    rmIfExists(scoutConfigPath())
+    rmIfExists(path.join(app.getPath('userData'), 'scout-downloads'))
+    emitSetupProgress({
+      active: false,
+      stage: '',
+      label: '',
+      percent: 0,
+      error: '',
+    })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) }
   }
 })
 

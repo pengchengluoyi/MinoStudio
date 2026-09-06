@@ -1,4 +1,5 @@
 <script setup>
+/** 技能 view_id=flow-doc：继续分析产出（脑图 / 用例草稿），不按 JSON 生成组件。 */
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useQaProcess } from '@/composables/useQaProcess'
