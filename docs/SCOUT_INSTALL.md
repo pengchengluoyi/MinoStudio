@@ -8,9 +8,10 @@ Scout is an independent executor. Studio downloads the installer from the **Scou
 2. Fetch GitHub `…/MinoScout/releases/latest/download/manifest.json` (baked `VITE_SCOUT_MANIFEST_URL`). **Never** `GET /releases/scout/latest` on Nexus.
 3. `POST /runtime/nodes/install-token` (credential only — Nexus does not host the zip)
 4. Electron plans which layers to fetch (see **Layered updates**), downloads each (sha256), unzips, then writes `{ nexus_url, token, version }`
-5. Zip helper `install.sh` / `install.ps1` (launchd / Scheduled Task), once per fetched layer, then start Scout
-6. Scout dials Nexus `/node`
-7. Studio polls `GET /runtime/nodes`
+5. Before replacing on-disk layers, Studio **stops** the running Scout (`mino-scout stop` → launchctl/systemd fallback). Zip helper `install.sh` / `install.ps1` runs the same stop path, then installs once per fetched layer.
+6. Studio **restarts** Scout and verifies the process PID changed so app-layer code is reloaded (`sys.path` is fixed at process start).
+7. Scout dials Nexus `/node`
+8. Studio polls `GET /runtime/nodes`
 
 Already installed but offline: **启动本机执行器** → `launchctl kickstart` / `schtasks /Run` / `systemctl --user start`. Studio does not `spawn` Scout on window open, and does not kill it on quit.
 

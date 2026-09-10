@@ -110,3 +110,49 @@ export function useTestingTaskList(appIdRef) {
 
   return { tasks, source, upsert }
 }
+
+/** 有进行中任务时定时拉取；页面重新可见时立即补一次。 */
+export function useLiveTaskRefresh({ intervalMs = 4000, poll, isEnabled = () => true } = {}) {
+  let timer = null
+  let busy = false
+
+  const tick = async () => {
+    if (typeof document !== 'undefined' && document.hidden) return
+    if (busy || !isEnabled()) return
+    busy = true
+    try {
+      await poll()
+    } finally {
+      busy = false
+    }
+  }
+
+  const start = () => {
+    if (timer) clearInterval(timer)
+    timer = setInterval(tick, intervalMs)
+  }
+
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
+
+  const onVis = () => {
+    if (!document.hidden) tick()
+  }
+
+  onMounted(() => {
+    tick()
+    start()
+    document.addEventListener('visibilitychange', onVis)
+  })
+
+  onUnmounted(() => {
+    stop()
+    document.removeEventListener('visibilitychange', onVis)
+  })
+
+  return { tick, start, stop }
+}

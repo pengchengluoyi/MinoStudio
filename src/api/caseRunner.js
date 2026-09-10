@@ -48,6 +48,78 @@ export const getAgentRuns = () =>
 export const getAgentSteps = (runId) =>
   request({ url: `/case-runner/agent/steps/${encodeURIComponent(runId)}`, method: 'get' })
 
+export const listSessions = ({ appId, runId, caseId, status, limit = 30, offset = 0 } = {}) =>
+  request({
+    url: '/case-runner/sessions',
+    method: 'get',
+    params: {
+      app_id: appId || undefined,
+      run_id: runId || undefined,
+      case_id: caseId || undefined,
+      status: status || undefined,
+      limit,
+      offset,
+    },
+  })
+
+export const getSessionTurns = (sessionId) =>
+  request({ url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/turns`, method: 'get' })
+
+export const getSessionEval = (sessionId) =>
+  request({ url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/eval`, method: 'get' })
+
+export const getSessionAudit = (sessionId) =>
+  request({ url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/audit`, method: 'get' })
+
+export const getSessionReplayPlan = (sessionId, { upToTurn } = {}) =>
+  request({
+    url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/replay-plan`,
+    method: 'get',
+    params: { up_to_turn: upToTurn ?? undefined },
+  })
+
+export const getSessionForkPlan = (sessionId, { fromTurn, providerId } = {}) =>
+  request({
+    url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/fork-plan`,
+    method: 'get',
+    params: { from_turn: fromTurn, provider_id: providerId || undefined },
+  })
+
+export const replaySession = (sessionId, data = {}) =>
+  request({
+    url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/replay`,
+    method: 'post',
+    data,
+    timeout: 600000,
+  })
+
+export const forkSession = (sessionId, data = {}) =>
+  request({
+    url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/fork`,
+    method: 'post',
+    data,
+    timeout: 600000,
+  })
+
+export const harvestSessions = (data = {}) =>
+  request({ url: '/case-runner/sessions/harvest', method: 'post', data })
+
+export const getSessionTrajectory = (sessionId) =>
+  request({ url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/trajectory`, method: 'get' })
+
+export const getSessionEvents = (sessionId, { fromSeq = 0, limit = 500 } = {}) =>
+  request({
+    url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/events`,
+    method: 'get',
+    params: { from_seq: fromSeq, limit },
+  })
+
+export const getSessionLlmCalls = (sessionId) =>
+  request({ url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/llm`, method: 'get' })
+
+export const getSessionMetrics = (sessionId) =>
+  request({ url: `/case-runner/sessions/${encodeURIComponent(sessionId)}/metrics`, method: 'get' })
+
 
 // ---- Trace（持久化的 m_case_run_trace） ----
 

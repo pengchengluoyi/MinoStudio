@@ -4,7 +4,7 @@
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
-import { getAgentSteps, getCaseRunnerTraceDetail } from '@/api/caseRunner'
+import { getAgentSteps, getCaseRunnerTraceDetail, getSessionTrajectory } from '@/api/caseRunner'
 import { getBaseUrl } from '@/utils/config'
 import { belongsToAgentTask } from '@/utils/copilotAgent'
 import { normalizeCaseRow, extractEngineSteps } from '@/utils/caseText'
@@ -209,6 +209,14 @@ function applyAgentEvent(d) {
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
       ...(knowledge ? { knowledge } : {}),
       ...(d.lane ? { lane: d.lane } : {}),
+      ...(d.dispatch_id ? { dispatch_id: d.dispatch_id } : {}),
+      ...(d.llm_input ? { llm_input: d.llm_input } : {}),
+      ...(d.llm_output ? { llm_output: d.llm_output } : {}),
+      ...(d.llm_meta ? { llm_meta: d.llm_meta } : {}),
+      ...(d.context_slots ? { context_slots: d.context_slots } : {}),
+      ...(d.context_menu ? { context_menu: d.context_menu } : {}),
+      ...(d.menu_flags ? { menu_flags: d.menu_flags } : {}),
+      ...(Array.isArray(d.inspections) && d.inspections.length ? { inspections: d.inspections } : {}),
     })
     if (d.step) activeStep.value = d.step
   }
@@ -249,6 +257,11 @@ function applyAgentEvent(d) {
       ...(d.llm_input ? { llm_input: d.llm_input } : {}),
       ...(d.llm_output ? { llm_output: d.llm_output } : {}),
       ...(d.llm_meta ? { llm_meta: d.llm_meta } : {}),
+      ...(d.dispatch_id ? { dispatch_id: d.dispatch_id } : {}),
+      ...(d.context_slots ? { context_slots: d.context_slots } : {}),
+      ...(d.context_menu ? { context_menu: d.context_menu } : {}),
+      ...(d.menu_flags ? { menu_flags: d.menu_flags } : {}),
+      ...(Array.isArray(d.inspections) && d.inspections.length ? { inspections: d.inspections } : {}),
       ...(d.lane ? { lane: d.lane } : {}),
     })
     activeStep.value = d.step
@@ -382,8 +395,12 @@ async function backfill(runId) {
   if (batch && batch !== runId) ids.push(batch)
   for (const id of ids) {
     try {
-      const res = await getAgentSteps(id)
-      const data = res?.data || {}
+      let res = await getSessionTrajectory(id)
+      let data = res?.data || {}
+      if (!(data.events || []).length) {
+        res = await getAgentSteps(id)
+        data = res?.data || {}
+      }
       applyEnvelope(data)
       const evs = data.events || []
       if (evs.length) {

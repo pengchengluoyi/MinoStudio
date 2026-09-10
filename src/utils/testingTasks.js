@@ -290,6 +290,21 @@ export function displayTaskStatus(task) {
   return s || 'unknown'
 }
 
+/** 批次是否仍在跑（含用例级 running / 排队 / HITL） */
+export function isTaskLive(task) {
+  if (!task) return false
+  const vis = displayTaskStatus(task)
+  if (vis === 'running' || vis === 'queued') return true
+  return (task.cases || []).some((c) => {
+    const s = String(c.status || '')
+    return s === 'running' || s === 'queued' || Boolean(c.hitl)
+  })
+}
+
+export function liveTasks(tasks = []) {
+  return (tasks || []).filter(isTaskLive)
+}
+
 export function taskProgressPct(task) {
   const total = Number(task?.total || 0)
   const vis = displayTaskStatus(task)

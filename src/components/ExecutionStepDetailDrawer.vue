@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { getPack } from '@/api/packs'
 import { formatElapsed, capabilityLabel, formatCapabilityAction, channelLabel } from '@/utils/testingTasks'
 import { checkpointLabel, resolveCheckpointHits } from '@/utils/checkpoints'
@@ -14,6 +15,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:modelValue', 'focus'])
+
+const router = useRouter()
 
 const visible = computed({
   get: () => props.modelValue,
@@ -56,6 +59,29 @@ const fmtMs = (ms) => formatElapsed(ms) || (ms ? `${ms}ms` : '')
 const hasLlmInput = computed(() => step.value?.llm_input != null && step.value?.llm_input !== '')
 const hasLlmOutput = computed(() => step.value?.llm_output != null && step.value?.llm_output !== '')
 const hasLlmMeta = computed(() => step.value?.llm_meta != null && step.value?.llm_meta !== '')
+
+const dispatchId = computed(() => String(step.value?.dispatch_id || '').trim())
+const contextSlots = computed(() => {
+  const row = step.value?.context_slots
+  return row && typeof row === 'object' ? row : null
+})
+const contextMenu = computed(() => {
+  const row = step.value?.context_menu
+  return row && typeof row === 'object' ? row : null
+})
+const menuFlags = computed(() => {
+  const row = step.value?.menu_flags
+  return row && typeof row === 'object' ? row : null
+})
+const stepInspections = computed(() => (
+  Array.isArray(step.value?.inspections) ? step.value.inspections : []
+))
+
+const openDispatch = () => {
+  const id = dispatchId.value
+  if (!id) return
+  router.push({ path: `/settings/dispatch/${encodeURIComponent(id)}` })
+}
 
 const recovery = computed(() => step.value?.recovery || null)
 const recoveryActions = computed(() => {
@@ -295,6 +321,53 @@ watch(
           </div>
         </section>
 
+        <section v-if="dispatchId" class="sd-card">
+          <h4>调度记录</h4>
+          <button type="button" class="sd-dispatch-link" @click="openDispatch">
+            查看 LLM 调用 {{ dispatchId }}
+          </button>
+        </section>
+
+        <section v-if="stepInspections.length" class="sd-card">
+          <h4>巡检</h4>
+          <div class="sd-stack">
+            <article v-for="(ins, ii) in stepInspections" :key="ii" class="sd-panel">
+              <div class="sd-panel-head">
+                <strong>{{ ins.job_id || 'inspect' }}</strong>
+                <span class="sd-badge" :class="ins.ok ? 'ok' : 'warn'">{{ ins.ok ? 'ok' : 'skip' }}</span>
+              </div>
+              <p v-if="ins.at" class="sd-know-note">时机：{{ ins.at }}</p>
+              <pre v-if="ins.session_block" class="sd-pre light">{{ ins.session_block }}</pre>
+            </article>
+          </div>
+        </section>
+
+        <section v-if="contextMenu || menuFlags" class="sd-card">
+          <h4>模型菜单快照</h4>
+          <div v-if="menuFlags" class="sd-field">
+            <span class="sd-label">recovery 在菜单</span>
+            <p>{{ menuFlags.recovery_in_menu ? '是' : '否' }}
+              <template v-if="menuFlags.recovery_caps?.length">
+                （{{ menuFlags.recovery_caps.join(', ') }}）
+              </template>
+            </p>
+          </div>
+          <div v-if="menuFlags?.cap_ids?.length" class="sd-chips">
+            <code
+              v-for="c in menuFlags.cap_ids"
+              :key="c"
+              class="sd-tag"
+              :class="{ recovery: c.startsWith('recover_'), ask: c === 'signal_ask_human' }"
+            >{{ c }}</code>
+          </div>
+          <PayloadView v-if="contextMenu" title="原始 menu" :value="contextMenu" />
+        </section>
+
+        <section v-if="contextSlots" class="sd-card">
+          <h4>注入上下文</h4>
+          <PayloadView :value="contextSlots" />
+        </section>
+
         <section v-if="hasLlmInput" class="sd-card">
           <h4>模型输入</h4>
           <PayloadView :value="step.llm_input" />
@@ -365,6 +438,22 @@ watch(
   gap: 12px;
   font-size: 12px;
   color: #6b7280;
+}
+.sd-dispatch-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sd-dispatch-link:hover {
+  background: #e0e7ff;
 }
 
 .sd-body {
@@ -470,7 +559,10 @@ watch(
 }
 .sd-acts span { margin-left: 6px; color: #6b7280; font-size: 12px; }
 
-.sd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sd-tag.recovery { background: #ecfdf5; color: #047857; }
+.sd-tag.ask { background: #fffbeb; color: #b45309; }
+
+.sd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .sd-cp-list { display: flex; flex-direction: column; gap: 8px; }
 .sd-cp {
   display: flex;

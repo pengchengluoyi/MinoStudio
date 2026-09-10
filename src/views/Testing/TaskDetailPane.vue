@@ -10,7 +10,7 @@ import {
 } from '@/api/caseRunner'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
-import { fetchTaskDetail } from '@/composables/useTestingTasks'
+import { fetchTaskDetail, useLiveTaskRefresh } from '@/composables/useTestingTasks'
 import { getAppAutomationConfig } from '@/api/appAutomation'
 import { reviewKnowledgeItem } from '@/api/settings'
 import { generatedCasesFromProcess } from '@/utils/qaProcess'
@@ -30,6 +30,7 @@ import {
   taskPackageLabel,
   isMissingTaskEndpoint,
   isStepLimitCase,
+  isTaskLive,
   platformLabel,
   progressStatus,
   shortDeviceLabel,
@@ -51,12 +52,11 @@ const props = defineProps({
   caseId: { type: String, default: '' },
   caseSn: { type: String, default: '' },
 })
-const emit = defineEmits(['open-task', 'open-case'])
+const emit = defineEmits(['open-task', 'open-case', 'open-session-log'])
 
 const loading = ref(false)
 const task = ref(null)
 const headerMeta = ref(null)
-const pollTimer = ref(null)
 const view = ref('summary')
 const casePage = ref(1)
 const casePageSize = ref(20)
@@ -179,7 +179,7 @@ const headStats = computed(() => {
     pending: cases.filter((c) => isPendingStatus(c.status)).length,
   }
 })
-const isLive = computed(() => task.value?.status === 'running')
+const isLive = computed(() => isTaskLive(task.value))
 const selectedCase = computed(() => findCaseIn(task.value?.cases, props.caseId, props.caseSn))
 const caseEnvAlign = computed(() => {
   const t = task.value
@@ -472,6 +472,11 @@ const copyRunId = async () => {
   }
 }
 
+const openSessionLog = () => {
+  if (!selectedCaseRunId.value) return
+  emit('open-session-log', selectedCaseRunId.value)
+}
+
 const copyTaskId = async () => {
   const id = props.taskId || task.value?.taskId
   if (!id) return
@@ -632,17 +637,19 @@ const focusHitlCase = async () => {
   }
 }
 
+useLiveTaskRefresh({
+  intervalMs: 4000,
+  isEnabled: () => isTaskLive(task.value),
+  poll: () => loadTask({ silent: true }),
+})
+
 onMounted(async () => {
   addMessageListener(onWs)
   await Promise.all([loadTask(), loadCatalog()])
-  pollTimer.value = setInterval(() => {
-    if (task.value?.status === 'running' || task.value?.status === 'queued') loadTask({ silent: true })
-  }, 15000)
 })
 
 onUnmounted(() => {
   removeMessageListener(onWs)
-  if (pollTimer.value) clearInterval(pollTimer.value)
 })
 
 watch(
@@ -675,6 +682,23 @@ watch(
 )
 
 watch(
+  () => props.seed,
+  (seed) => {
+    if (!seed || String(seed.taskId || '') !== String(props.taskId || '')) return
+    if (!task.value) {
+      task.value = { ...seed }
+      return
+    }
+    task.value = keepReviewedProposals(task.value, {
+      ...task.value,
+      ...seed,
+      cases: Array.isArray(seed.cases) && seed.cases.length ? seed.cases : task.value.cases,
+    })
+  },
+  { deep: true },
+)
+
+watch(
   () => [props.caseId, props.caseSn],
   () => {
     if (isCasePage.value && selectedCase.value) loadHeader(selectedCaseRunId.value)
@@ -683,7 +707,7 @@ watch(
 )
 
 watch(showPendingTab, (show) => {
-  if (!show) caseTab.value = 'executed'
+  if (!show && caseTab.value === 'pending') caseTab.value = 'executed'
 })
 
 watch([caseTab, () => railCases.value.length], () => {
@@ -731,6 +755,13 @@ const saveReview = async () => {
           </div>
           <div class="pane-head-actions">
             <slot name="actions" />
+            <el-button
+              v-if="showTimeline"
+              size="small"
+              text
+              type="primary"
+              @click="openSessionLog"
+            >Session Log</el-button>
             <el-button size="small" text @click="copyRunId">复制编号</el-button>
             <el-button
               v-if="headerMeta && !headerMeta.live && selectedCase"

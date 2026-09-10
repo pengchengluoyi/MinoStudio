@@ -9,6 +9,7 @@ import { assistQaProcess, cancelQaProcessJob, publishQaMindmap, reviewAtlasPatch
 import { openExternalUrl } from '@/utils/openExternal'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
+import CaseImportDialog from '@/views/Testing/CaseImportDialog.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import CasePairedEditor from '@/components/CasePairedEditor.vue'
@@ -329,6 +330,7 @@ const mindHistory = computed(() => coverHistory(selectedReq.value, 'draft_mindma
 const caseHistory = computed(() => coverHistory(selectedReq.value, 'draft_cases'))
 const coverImportOpen = ref(false)
 const coverImportKind = ref('mindmap')
+const caseImportOpen = ref(false)
 const coverHistKind = (row) => {
   if (row?.kind === 'import') return '导入'
   if (row?.kind === 'retry') return '重试'
@@ -339,6 +341,14 @@ const openCoverImport = (kind) => {
     ElMessage.warning('请先选一条需求')
     return
   }
+  if (kind === 'cases') {
+    if (!props.projectId) {
+      ElMessage.warning('缺少项目信息，无法导入用例')
+      return
+    }
+    caseImportOpen.value = true
+    return
+  }
   coverImportKind.value = kind
   coverImportOpen.value = true
 }
@@ -347,6 +357,9 @@ const onCoverImported = (data) => {
   // 导入产生了待确认的图谱变更就直接切过去 —— 不切的话人停在脑图面板上，
   // 看到的还是旧骨架，而且 tick 在 patch 处理完之前不会再提新建议。
   if (data?.atlas === 'patch' || data?.atlas === 'pending') stageJobId.value = 'propose_atlas'
+}
+const onCaseImported = async () => {
+  await load()
 }
 const wikiPublishing = ref(false)
 const wikiHistoryOpen = ref(false)
@@ -2348,6 +2361,13 @@ watch(() => props.projectId, loadEnvSnap)
       :requirement-id="selectedReq?.id || ''"
       :requirements="requirements"
       @imported="onCoverImported"
+    />
+    <CaseImportDialog
+      v-model="caseImportOpen"
+      :project-id="projectId"
+      :requirement-id="selectedReq?.id || ''"
+      :requirements="requirements"
+      @imported="onCaseImported"
     />
     <WikiHistoryDialog
       v-model="wikiHistoryOpen"

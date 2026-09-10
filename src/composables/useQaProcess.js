@@ -62,10 +62,17 @@ export function useQaProcess(appIdRef) {
     updated_at: nowIso(),
   }))
 
+  const qaProcessForPersist = (doc) => ({
+    ...doc,
+    requirements: (doc.requirements || [])
+      .filter((r) => r?.id !== '__imported_cases__')
+      .map(({ draft_cases, ...req }) => req),
+  })
+
   const persist = async () => {
     const appId = appIdRef.value
     if (!appId) return
-    const next = state.value
+    const next = qaProcessForPersist(state.value)
     saving.value = true
     try {
       await updateAppAutomationConfig(appId, { qa_process: next })
@@ -95,7 +102,9 @@ export function useQaProcess(appIdRef) {
   )
 
   const apply = (doc) => {
-    requirements.value = Array.isArray(doc?.requirements) ? doc.requirements : []
+    requirements.value = Array.isArray(doc?.requirements)
+      ? doc.requirements.filter((r) => r?.id !== '__imported_cases__')
+      : []
     releases.value = Array.isArray(doc?.releases) ? doc.releases : []
     schedule.value = Array.isArray(doc?.schedule) ? doc.schedule : []
     workflow.value = doc?.workflow && typeof doc.workflow === 'object' ? doc.workflow : null
@@ -106,7 +115,7 @@ export function useQaProcess(appIdRef) {
     roleLog.value = Array.isArray(doc?.role_log) ? doc.role_log : []
     // 服务端回传的结果也要落进本地缓存，不然刷新时旧缓存会把它盖回去
     const appId = appIdRef.value
-    if (appId && hasProcessData(doc)) writeCache(appId, state.value)
+    if (appId && hasProcessData(doc)) writeCache(appId, qaProcessForPersist(state.value))
   }
 
   const load = async () => {
@@ -118,7 +127,7 @@ export function useQaProcess(appIdRef) {
       const remote = res?.data?.automation?.qa_process
       if (hasProcessData(remote)) {
         apply(remote)
-        writeCache(appId, state.value)
+        writeCache(appId, qaProcessForPersist(state.value))
       } else {
         const cached = readCache(appId)
         if (hasProcessData(cached)) {

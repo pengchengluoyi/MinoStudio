@@ -360,37 +360,48 @@ export function linkedCaseIds(req) {
   return [...set]
 }
 
+/** 单条用例（库表 / 流程草稿）→ 执行弹窗、用例库共用结构。 */
+export function normalizeCaseRow(raw, reqTitle = '') {
+  if (!raw || typeof raw !== 'object') return null
+  const caseId = String(raw.case_id || '').trim()
+  if (!caseId) return null
+  const title = String(reqTitle || raw.requirement_title || '').trim()
+  const stepsRaw = Array.isArray(raw.steps) ? raw.steps.join('\n') : String(raw.steps || raw.steps_raw || '')
+  const expectedRaw = Array.isArray(raw.expected) ? raw.expected.join('\n') : String(raw.expected || raw.expected_raw || '')
+  const module = String(raw.module || '').trim()
+  return {
+    ...raw,
+    case_id: caseId,
+    name: raw.name || raw.title || caseId,
+    title: raw.name || raw.title || caseId,
+    module,
+    source: raw.source || raw.origin || 'generated',
+    requirement_id: raw.requirement_id || '',
+    requirement_title: raw.requirement_title || title,
+    steps: Array.isArray(raw.steps) ? raw.steps : splitNumberedLines(stepsRaw),
+    expected: Array.isArray(raw.expected) ? raw.expected : splitNumberedLines(expectedRaw),
+    steps_raw: stepsRaw,
+    expected_raw: expectedRaw,
+    precondition: raw.precondition || raw.pre || '',
+    platform: raw.platform || '',
+  }
+}
+
+export function casesFromProjectRows(rows = []) {
+  return (rows || []).map((r) => normalizeCaseRow(r)).filter(Boolean)
+}
+
 /** 流程里写出来的用例，转成和下发对话框同一套结构。 */
 export function generatedCasesFromProcess(requirements = []) {
-  const rows = []
+  const out = []
   for (const req of requirements || []) {
     const title = String(req?.title || req?.external_id || '需求').trim() || '需求'
     for (const raw of req?.draft_cases || []) {
-      if (!raw || typeof raw !== 'object') continue
-      const caseId = String(raw.case_id || '').trim()
-      if (!caseId) continue
-      const stepsRaw = Array.isArray(raw.steps) ? raw.steps.join('\n') : String(raw.steps || raw.steps_raw || '')
-      const expectedRaw = Array.isArray(raw.expected) ? raw.expected.join('\n') : String(raw.expected || raw.expected_raw || '')
-      const module = String(raw.module || '').trim()
-      rows.push({
-        ...raw,
-        case_id: caseId,
-        name: raw.name || raw.title || caseId,
-        title: raw.name || raw.title || caseId,
-        module: module ? `本需求生成 / ${title} / ${module}` : `本需求生成 / ${title}`,
-        source: 'generated',
-        requirement_id: req.id || raw.requirement_id || '',
-        requirement_title: title,
-        steps: Array.isArray(raw.steps) ? raw.steps : splitNumberedLines(stepsRaw),
-        expected: Array.isArray(raw.expected) ? raw.expected : splitNumberedLines(expectedRaw),
-        steps_raw: stepsRaw,
-        expected_raw: expectedRaw,
-        precondition: raw.precondition || raw.pre || '',
-        platform: raw.platform || '',
-      })
+      const row = normalizeCaseRow(raw, title)
+      if (row) out.push({ ...row, requirement_id: req.id || row.requirement_id || '' })
     }
   }
-  return rows
+  return out
 }
 
 export function mergeRunCases(primary = [], extra = []) {

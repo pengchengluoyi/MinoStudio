@@ -30,10 +30,11 @@ let trayMenu = null
 let isQuitting = false
 
 const SETUP_STAGES = {
-  download: { from: 0, to: 55, label: '下载安装包' },
-  unzip: { from: 55, to: 75, label: '解压' },
-  config: { from: 75, to: 88, label: '写入配置' },
-  start: { from: 88, to: 100, label: '启动 Scout' },
+  download: { from: 0, to: 50, label: '下载安装包' },
+  unzip: { from: 50, to: 68, label: '解压' },
+  config: { from: 68, to: 78, label: '写入配置' },
+  stop: { from: 78, to: 86, label: '停止旧进程' },
+  start: { from: 86, to: 100, label: '重启 Scout' },
 }
 
 let scoutSetupJob = {
@@ -494,6 +495,17 @@ const waitUntilScoutRunning = async ({ timeoutMs = 15000, intervalMs = 400 } = {
   return last
 }
 
+const waitUntilScoutStopped = async ({ timeoutMs = 20000, intervalMs = 300 } = {}) => {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const live = await scoutIsRunning()
+    if (!live.running) return { stopped: true, pid: 0 }
+    await sleep(intervalMs)
+  }
+  const live = await scoutIsRunning()
+  return { stopped: !live.running, pid: live.pid || null, timedOut: !!live.running }
+}
+
 const chmodTreeExecutable = (root) => {
   if (!root || !fs.existsSync(root)) return
   const walk = (dir) => {
@@ -549,7 +561,7 @@ const chromiumLooksInstalled = (dir) => {
   return walk(dir, 0)
 }
 
-const startScoutService = async ({ onStage } = {}) => {
+const launchScoutProcess = async ({ onStage } = {}) => {
   const bin = scoutBin()
   if (!bin) return { ok: false, error: '本机还没有执行器。请先下载安装。' }
   try { fs.chmodSync(bin, 0o755) } catch { /* ignore */ }
@@ -604,6 +616,62 @@ const startScoutService = async ({ onStage } = {}) => {
   const live = await waitUntilScoutRunning({ timeoutMs: 12000 })
   if (live.running) return { ok: true, method: 'systemd', pid: live.pid || null }
   return { ok: false, error: startFailureHint() }
+}
+
+const ensureScoutStopped = async ({ previousPid = 0 } = {}) => {
+  const before = await scoutIsRunning()
+  if (!before.running) return { ok: true, already: true, previousPid: 0 }
+  const targetPid = previousPid || before.pid || 0
+  await stopScoutService()
+  let wait = await waitUntilScoutStopped({ timeoutMs: 18000 })
+  if (wait.stopped) return { ok: true, previousPid: targetPid }
+  await killScoutByPgrep()
+  wait = await waitUntilScoutStopped({ timeoutMs: 8000 })
+  if (wait.stopped) return { ok: true, previousPid: targetPid, method: 'pgrep-kill' }
+  return {
+    ok: false,
+    error: '无法停止正在运行的执行器。请在「Scout 节点」页手动停止后重试。',
+    pid: wait.pid || before.pid,
+  }
+}
+
+const startScoutService = async ({ onStage, requireFreshProcess = false, previousPid = 0 } = {}) => {
+  if (requireFreshProcess) {
+    const live = await scoutIsRunning()
+    if (live.running && (!previousPid || live.pid === previousPid)) {
+      const stopped = await ensureScoutStopped({ previousPid: previousPid || live.pid })
+      if (!stopped.ok) return { ok: false, error: stopped.error || '停止旧进程失败' }
+    }
+  }
+  let started = await launchScoutProcess({ onStage })
+  if (!started?.ok) return started
+  if (requireFreshProcess && previousPid > 0 && started.pid === previousPid) {
+    const stopped = await ensureScoutStopped({ previousPid })
+    if (!stopped.ok) return { ok: false, error: stopped.error || '停止旧进程失败', pid: previousPid }
+    started = await launchScoutProcess({ onStage })
+    if (!started?.ok) return started
+    if (started.pid === previousPid) {
+      return {
+        ok: false,
+        error: '执行器未加载新版本（进程未重启）。请手动点「重启」后再跑用例。',
+        pid: started.pid,
+      }
+    }
+  }
+  return started
+}
+
+const restartScoutService = async ({ onStage } = {}) => {
+  const before = await scoutIsRunning()
+  if (before.running) {
+    const stopped = await ensureScoutStopped({ previousPid: before.pid })
+    if (!stopped.ok) return { ok: false, error: stopped.error || '停止旧进程失败', pid: before.pid }
+  }
+  return startScoutService({
+    onStage,
+    requireFreshProcess: true,
+    previousPid: before.pid || 0,
+  })
 }
 
 const runStartJob = async () => {
@@ -806,12 +874,7 @@ ipcMain.handle('scout-installed-version', async () => {
 
 ipcMain.handle('scout-restart', async () => {
   try {
-    const live = await scoutIsRunning()
-    if (live.running) {
-      const stopped = await stopScoutService()
-      if (!stopped?.ok && !stopped?.already) return stopped
-    }
-    return await startScoutService()
+    return await restartScoutService()
   } catch (e) {
     return { ok: false, error: e.message || String(e) }
   }
@@ -915,7 +978,16 @@ ipcMain.handle('scout-stop', async () => {
   try {
     const live = await scoutIsRunning()
     if (!live.running) return { ok: true, already: true }
-    return await stopScoutService()
+    const result = await stopScoutService()
+    const wait = await waitUntilScoutStopped({ timeoutMs: 15000 })
+    if (!wait.stopped) {
+      await killScoutByPgrep()
+      const retry = await waitUntilScoutStopped({ timeoutMs: 8000 })
+      if (!retry.stopped) {
+        return { ok: false, error: '执行器未能完全停止', pid: retry.pid || live.pid }
+      }
+    }
+    return result?.ok === false ? { ok: true, method: 'forced-stop' } : result
   } catch (e) {
     return { ok: false, error: e.message || String(e) }
   }
@@ -993,6 +1065,8 @@ const runScoutSetup = async (payload = {}) => {
     let doneBytes = 0
     let lastDest = ''
     let lastRoot = ''
+    const beforeInstall = await scoutIsRunning()
+    const needsPayloadInstall = plan.steps.length > 0
 
     for (const step of plan.steps) {
       const tag = step.layer ? `${SETUP_STAGES.download.label}（${step.layer} 层）` : SETUP_STAGES.download.label
@@ -1059,6 +1133,22 @@ const runScoutSetup = async (payload = {}) => {
       label: SETUP_STAGES.unzip.label,
       percent: mapStagePercent('unzip', 70),
     })
+    if (needsPayloadInstall && beforeInstall.running) {
+      emitSetupProgress({
+        stage: 'stop',
+        label: SETUP_STAGES.stop.label,
+        percent: mapStagePercent('stop', 20),
+      })
+      const stopped = await ensureScoutStopped({ previousPid: beforeInstall.pid })
+      if (!stopped.ok) {
+        throw new Error(stopped.error || '停止旧进程失败')
+      }
+      emitSetupProgress({
+        stage: 'stop',
+        label: SETUP_STAGES.stop.label,
+        percent: mapStagePercent('stop', 100),
+      })
+    }
     // 顺序就是 planScoutUpdate 给的 runtime → app → browser。app 层的 requires_runtime
     // 闸门要求 runtime 先落地，颠倒过来安装脚本会拒绝并退出非 0。
     for (const { root } of staged) {
@@ -1076,7 +1166,10 @@ const runScoutSetup = async (payload = {}) => {
       label: SETUP_STAGES.start.label,
       percent: mapStagePercent('start', 25),
     })
-    const started = await startScoutService()
+    const started = await startScoutService({
+      requireFreshProcess: needsPayloadInstall,
+      previousPid: beforeInstall.pid || 0,
+    })
     if (!started?.ok) {
       throw new Error(started?.error || '启动失败')
     }
@@ -1088,13 +1181,15 @@ const runScoutSetup = async (payload = {}) => {
     emitSetupProgress({
       active: false,
       stage: 'done',
-      label: '已启动',
+      label: needsPayloadInstall ? '已更新并重启' : '已启动',
       percent: 100,
       error: '',
     })
     return {
       ok: true,
       launched: true,
+      restarted: needsPayloadInstall,
+      previousPid: beforeInstall.pid || null,
       path: lastDest,
       unpacked: lastRoot,
       pid: started.pid || null,

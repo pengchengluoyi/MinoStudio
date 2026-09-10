@@ -13,6 +13,7 @@ import {
   groupDispatchJobs,
   jobLabel,
   jobSummary,
+  promptVersionLabel,
   matchDispatchFilters,
   relatedWork,
   roleLabel,
@@ -183,8 +184,11 @@ onMounted(load)
           </el-table-column>
         </template>
         <template v-else>
-          <el-table-column label="技能" min-width="120" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.step_label || skillLabel(row.skill || row.job) }}</template>
+          <el-table-column label="技能" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.step_label || skillLabel(row.skill || row.job) }}
+              <span v-if="promptVersionLabel(row)"> · {{ promptVersionLabel(row) }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="序号" width="64">
             <template #default="{ row }">{{ row.step_index_label || '—' }}</template>

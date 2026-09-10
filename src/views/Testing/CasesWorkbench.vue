@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { cancelQaProcessJob, deleteAtlasAlias, listAtlasAliases, publishQaMindmap, reviewAtlasPatch, runQaProcessTick, updateAtlasAlias } from '@/api/appAutomation'
+import { deleteProjectCase, deleteProjectCases, getProjectCases, updateProjectCase } from '@/api/projectCases'
 import { openExternalUrl } from '@/utils/openExternal'
 import { useQaProcess } from '@/composables/useQaProcess'
 import {
@@ -16,7 +17,7 @@ import {
   pathParts,
   platformLabel,
 } from '@/utils/appAtlas'
-import { generatedCasesFromProcess, previousRelease, sortReleases } from '@/utils/qaProcess'
+import { casesFromProjectRows, generatedCasesFromProcess, previousRelease, sortReleases } from '@/utils/qaProcess'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
@@ -24,6 +25,7 @@ import CasePairedEditor from '@/components/CasePairedEditor.vue'
 import AtlasBoardView from '@/views/Testing/AtlasBoardView.vue'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
+import CaseImportDialog from '@/views/Testing/CaseImportDialog.vue'
 import WikiHistoryDialog from '@/views/Testing/WikiHistoryDialog.vue'
 import HintFold from '@/components/HintFold.vue'
 import '@/views/Settings/settings-ui.css'
@@ -36,7 +38,7 @@ const props = defineProps({
   hideNav: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['open-req'])
+const emit = defineEmits(['open-req', 'cases-changed'])
 
 const VIEWS = [
   { id: 'atlas', label: '应用图谱', desc: '多层模块骨架' },
@@ -55,7 +57,6 @@ const {
   loading,
   load,
   apply,
-  persistSoon,
 } = useQaProcess(appIdRef)
 
 const ticking = ref(false)
@@ -98,19 +99,53 @@ const removeAlias = async (row) => {
 }
 const view = ref('atlas')
 const selectedReqId = ref('')
-const cases = computed(() => generatedCasesFromProcess(requirements.value))
+const projectCases = ref([])
+const casesLoading = ref(false)
+
+const loadProjectCases = async () => {
+  if (!props.projectId) {
+    projectCases.value = []
+    return
+  }
+  casesLoading.value = true
+  try {
+    const res = await getProjectCases(props.projectId)
+    projectCases.value = casesFromProjectRows(res?.data?.cases || [])
+  } catch (_) {
+    projectCases.value = []
+  } finally {
+    casesLoading.value = false
+  }
+}
+
+const cases = computed(() => {
+  if (projectCases.value.length) return projectCases.value
+  return generatedCasesFromProcess(requirements.value)
+})
 const layoutMode = ref('outline')
 const caseQuery = ref('')
 const filterPath = ref([])
 const casePage = ref(1)
 const casePageSize = ref(20)
+const libraryTableRef = ref(null)
+const selectedLibraryCases = ref([])
+const batchDeleting = ref(false)
 const atlasVersionId = ref('')
 const selectedPlatform = ref('')
 const coverImportOpen = ref(false)
 const coverImportKind = ref('mindmap')
+const caseImportOpen = ref(false)
 const openCoverImport = (kind) => {
   if (!requirements.value.length) {
     ElMessage.warning('请先有一条需求')
+    return
+  }
+  if (kind === 'cases') {
+    if (!props.projectId) {
+      ElMessage.warning('缺少项目信息，无法导入用例')
+      return
+    }
+    caseImportOpen.value = true
     return
   }
   coverImportKind.value = kind
@@ -120,6 +155,10 @@ const onCoverImported = (data) => {
   if (data?.qa_process) apply(data.qa_process)
   // 待确认的图谱变更只在「应用图谱」页显示，导入完停在脑图页就看不到它。
   if (data?.atlas === 'patch' || data?.atlas === 'pending') setView('atlas')
+}
+const onCaseImported = async () => {
+  await Promise.all([load(), loadProjectCases()])
+  emit('cases-changed')
 }
 const wikiPublishing = ref(false)
 const wikiHistoryOpen = ref(false)
@@ -179,7 +218,11 @@ const versionAtlas = computed(() => {
   if (rel?.atlas && Array.isArray(rel.atlas.modules) && rel.atlas.modules.length) return rel.atlas
   return appAtlas.value
 })
-const caseAssign = computed(() => assignCasesToAtlas(versionAtlas.value, cases.value, requirements.value))
+const caseAssign = computed(() => assignCasesToAtlas(
+  versionAtlas.value,
+  cases.value,
+  projectCases.value.length ? [] : requirements.value,
+))
 
 const prevRelease = computed(() => previousRelease(releases.value, activeRelease.value))
 const atlasRoot = computed(() => atlasBoard(versionAtlas.value, {
@@ -246,17 +289,91 @@ const visibleCases = computed(() => {
 })
 const pagedCases = computed(() => slicePage(visibleCases.value, casePage.value, casePageSize.value))
 
-const onLibraryCaseChange = (row, fields) => {
-  const reqId = row?.requirement_id
-  if (!reqId) return
-  const req = requirements.value.find((r) => r.id === reqId)
-  if (!req) return
-  const cases = (req.draft_cases || []).map((c) => (
-    String(c.case_id) === String(row.case_id) ? { ...c, ...fields } : c
-  ))
-  const i = requirements.value.findIndex((r) => r.id === req.id)
-  if (i >= 0) requirements.value.splice(i, 1, { ...req, draft_cases: cases })
-  persistSoon()
+const selectedCaseIds = computed(() => {
+  const ids = new Set()
+  for (const row of selectedLibraryCases.value) {
+    const cid = String(row?.case_id || '').trim()
+    if (cid) ids.add(cid)
+  }
+  return [...ids]
+})
+
+const onLibrarySelectionChange = (rows) => {
+  selectedLibraryCases.value = rows || []
+}
+
+watch([casePage, casePageSize, caseQuery, filterPath], () => {
+  libraryTableRef.value?.clearSelection?.()
+})
+
+const onLibraryCaseChange = async (row, fields) => {
+  const cid = String(row?.case_id || '').trim()
+  if (!cid || !props.projectId) return
+  try {
+    await updateProjectCase(props.projectId, cid, fields)
+    projectCases.value = projectCases.value.map((c) => (
+      String(c.case_id) === cid ? { ...c, ...fields } : c
+    ))
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  }
+}
+
+const sourceLabel = (row) => {
+  const s = String(row?.source || row?.origin || '').toLowerCase()
+  if (s === 'import') return '导入'
+  if (s === 'generated' || s === 'draft') return '生成'
+  return s || '—'
+}
+
+const deleteLibraryCase = async (row) => {
+  const cid = String(row?.case_id || '').trim()
+  if (!cid || !props.projectId) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除用例「${row.name || cid}」（${cid}）？删除后不可恢复。`,
+      '删除用例',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteProjectCase(props.projectId, cid)
+    ElMessage.success('已删除')
+    libraryTableRef.value?.clearSelection?.()
+    await loadProjectCases()
+    emit('cases-changed')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  }
+}
+
+const deleteSelectedLibraryCases = async () => {
+  const ids = selectedCaseIds.value
+  if (!ids.length || !props.projectId) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${ids.length} 条用例？删除后不可恢复。`,
+      '批量删除',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  batchDeleting.value = true
+  try {
+    const res = await deleteProjectCases(props.projectId, ids)
+    const n = res?.data?.deleted ?? ids.length
+    ElMessage.success(`已删除 ${n} 条`)
+    libraryTableRef.value?.clearSelection?.()
+    await loadProjectCases()
+    emit('cases-changed')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '批量删除失败')
+  } finally {
+    batchDeleting.value = false
+  }
 }
 
 const syncViewFromRoute = () => {
@@ -432,13 +549,15 @@ watch(versionOptions, (rows) => {
 }, { immediate: true })
 watch(() => props.appId, async () => {
   lastTick.value = ''
-  await load()
+  await Promise.all([load(), loadProjectCases()])
   await loadAliases()
 })
 
+watch(() => props.projectId, () => { loadProjectCases() })
+
 onMounted(async () => {
   syncViewFromRoute()
-  await load()
+  await Promise.all([load(), loadProjectCases()])
   await loadAliases()
   if (!selectedReqId.value && requirements.value[0]) selectedReqId.value = requirements.value[0].id
 })
@@ -560,10 +679,29 @@ onMounted(async () => {
             />
             <el-input v-model="caseQuery" size="small" clearable placeholder="搜索编号、名称、端" class="lib-search" />
             <el-button size="small" @click="openCoverImport('cases')">导入用例</el-button>
+            <el-button
+              v-if="selectedCaseIds.length"
+              size="small"
+              type="danger"
+              plain
+              :loading="batchDeleting"
+              @click="deleteSelectedLibraryCases"
+            >删除选中 · {{ selectedCaseIds.length }}</el-button>
           </div>
         </div>
         <div class="table-fill">
-          <el-table :data="pagedCases" size="small" border stripe height="100%" row-key="_rowKey" empty-text="没有符合筛选的用例">
+          <el-table
+            ref="libraryTableRef"
+            :data="pagedCases"
+            size="small"
+            border
+            stripe
+            height="100%"
+            row-key="_rowKey"
+            empty-text="没有符合筛选的用例"
+            @selection-change="onLibrarySelectionChange"
+          >
+            <el-table-column type="selection" width="42" fixed="left" />
             <el-table-column type="expand">
               <template #default="{ row }">
                 <div class="lib-case-expand">
@@ -593,6 +731,16 @@ onMounted(async () => {
             <el-table-column label="预期效果" min-width="160">
               <template #default="{ row }">
                 <CaseAlignedFieldCell :row="row" field="expected" />
+              </template>
+            </el-table-column>
+            <el-table-column label="来源" width="64" align="center">
+              <template #default="{ row }">
+                <span class="source-tag" :class="`is-${row.source || 'generated'}`">{{ sourceLabel(row) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="72" fixed="right" align="center">
+              <template #default="{ row }">
+                <el-button link type="danger" size="small" @click="deleteLibraryCase(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -678,10 +826,17 @@ onMounted(async () => {
     <CoverImportDialog
       v-model="coverImportOpen"
       :app-id="appId"
-      :kind="coverImportKind"
+      kind="mindmap"
       :requirement-id="selectedReqId || selectedReq?.id || ''"
       :requirements="requirements"
       @imported="onCoverImported"
+    />
+    <CaseImportDialog
+      v-model="caseImportOpen"
+      :project-id="projectId"
+      :requirement-id="selectedReqId || selectedReq?.id || ''"
+      :requirements="requirements"
+      @imported="onCaseImported"
     />
     <WikiHistoryDialog
       v-model="wikiHistoryOpen"
@@ -893,6 +1048,17 @@ onMounted(async () => {
   vertical-align: top;
   height: auto;
   overflow: hidden;
+}
+
+.source-tag {
+  font-size: 11px;
+  color: #64748b;
+}
+.source-tag.is-import {
+  color: #2563eb;
+}
+.source-tag.is-generated {
+  color: #9333ea;
 }
 
 .library-wrap :deep(.el-table .cell) {

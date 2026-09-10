@@ -7,6 +7,7 @@ import {
   listCaseRunnerDevices,
 } from '@/api/caseRunner'
 import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
+import { getProjectCases } from '@/api/projectCases'
 import { listAIProviders } from '@/api/settings'
 import { getProjects } from '@/api/workReport'
 import WorkShell from '@/layouts/WorkShell.vue'
@@ -18,12 +19,15 @@ import AssetsPage from '@/views/Testing/AssetsPage.vue'
 import DispatchPage from '@/views/Settings/DispatchPage.vue'
 import DispatchJobPage from '@/views/Settings/DispatchJobPage.vue'
 import QaProcessPanel from '@/views/Testing/QaProcessPanel.vue'
+import SessionLogPanel from '@/views/Testing/SessionLogPanel.vue'
 import { filterExecutableDevices, formatDeviceMeta, formatDeviceTag } from '@/utils/testingDevices'
 import {
   casePlatformKind,
   coverageLabel,
   devicePlatformKind,
   displayTaskStatus,
+  isTaskLive,
+  liveTasks,
   filterTasks,
   formatTaskDevices,
   parseBusyConflict,
@@ -40,10 +44,10 @@ import {
   taskSns,
   taskTitle,
 } from '@/utils/testingTasks'
-import { fetchTaskDetail, fetchTasksForApp, useTestingTaskList } from '@/composables/useTestingTasks'
+import { fetchTaskDetail, fetchTasksForApp, useLiveTaskRefresh, useTestingTaskList } from '@/composables/useTestingTasks'
 import { envLabel } from '@/constants/envProfiles'
 import { groupCasesByModuleTree, parseCaseIdQuery, suiteCaseIds } from '@/utils/caseLibrary'
-import { generatedCasesFromProcess, mergeRunCases } from '@/utils/qaProcess'
+import { casesFromProjectRows, generatedCasesFromProcess, mergeRunCases } from '@/utils/qaProcess'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import '@/views/Settings/settings-ui.css'
 
@@ -54,7 +58,7 @@ const appId = computed(() => String(route.params.appId || ''))
 const appName = computed(() => String(route.query.appName || '应用'))
 const projectName = computed(() => String(route.query.projectName || ''))
 const projectId = computed(() => String(route.query.projectId || ''))
-const VALID_TABS = ['process', 'tasks', 'dispatch', 'cases', 'knowledge', 'assets', 'config']
+const VALID_TABS = ['process', 'tasks', 'dispatch', 'session-log', 'cases', 'knowledge', 'assets', 'config']
 const TESTING_NAV = [
   {
     id: 'process',
@@ -75,6 +79,7 @@ const TESTING_NAV = [
     children: [
       { id: 'runs', label: '执行批次' },
       { id: 'calls', label: '调用记录' },
+      { id: 'session-log', label: 'Session Log' },
     ],
   },
   {
@@ -167,7 +172,7 @@ watch(
 
 const loading = ref(false)
 const { tasks, upsert } = useTestingTaskList(appId)
-const pollTimer = ref(null)
+const livePollTick = ref(0)
 const projects = ref([])
 
 const devices = ref([])
@@ -208,7 +213,7 @@ const activeSub = computed(() => {
 })
 const itemOpen = ref({
   process: tab.value === 'process',
-  tasks: tab.value === 'tasks' || tab.value === 'dispatch',
+  tasks: tab.value === 'tasks' || tab.value === 'dispatch' || tab.value === 'session-log',
   cases: tab.value === 'cases',
   knowledge: tab.value === 'knowledge',
   assets: tab.value === 'assets',
@@ -227,7 +232,7 @@ const searchHits = computed(() => {
   }
   rows.push({ tab: 'cases', sub: 'library', label: '用例库' })
   rows.push({ tab: 'process', sub: '', label: '流程' })
-  rows.push({ tab: 'assets', sub: '', label: '测试资源' })
+  rows.push({ tab: 'session-log', sub: '', label: 'Session Log' })
   for (const t of tasks.value || []) {
     const title = taskTitle(t)
     if (title) rows.push({ tab: 'tasks', sub: '', task: t.taskId, label: `执行批次 / ${title}` })
@@ -236,13 +241,14 @@ const searchHits = computed(() => {
   return rows.filter((r) => r.label.toLowerCase().includes(q))
 })
 const navItemOn = (item) => {
-  if (item.id === 'tasks') return tab.value === 'tasks' || tab.value === 'dispatch'
+  if (item.id === 'tasks') return tab.value === 'tasks' || tab.value === 'dispatch' || tab.value === 'session-log'
   return tab.value === item.id
 }
 const childOn = (item, child) => {
   if (item.id === 'tasks') {
     if (child.id === 'runs') return tab.value === 'tasks'
     if (child.id === 'calls') return tab.value === 'dispatch'
+    if (child.id === 'session-log') return tab.value === 'session-log'
   }
   return tab.value === item.id && activeSub.value === child.id
 }
@@ -259,7 +265,15 @@ const toggleNavItem = (item) => {
 }
 const onNavChild = async (item, child) => {
   if (item.id === 'tasks') {
-    await setTab(child.id === 'calls' ? 'dispatch' : 'tasks')
+    if (child.id === 'calls') {
+      await setTab('dispatch')
+      return
+    }
+    if (child.id === 'session-log') {
+      await setTab('session-log')
+      return
+    }
+    await setTab('tasks')
     return
   }
   if (tab.value !== item.id) await setTab(item.id)
@@ -288,7 +302,7 @@ const onShellCreate = () => {
   if (tab.value === 'tasks') openNewRun()
 }
 watch(tab, (id) => {
-  if (id === 'dispatch') itemOpen.value.tasks = true
+  if (id === 'dispatch' || id === 'session-log') itemOpen.value.tasks = true
   const hit = TESTING_NAV.find((n) => n.id === id)
   if (hit?.children?.length) itemOpen.value[id] = true
 })
@@ -331,9 +345,7 @@ const visibleTasks = computed(() => sortTasksForList(filterTasks(tasks.value, {
 const taskPage = ref(1)
 const taskPageSize = ref(20)
 const pagedTasks = computed(() => slicePage(visibleTasks.value, taskPage.value, taskPageSize.value))
-const runningTaskCount = computed(() =>
-  tasks.value.filter((t) => ['running', 'queued'].includes(displayTaskStatus(t))).length,
-)
+const runningTaskCount = computed(() => liveTasks(tasks.value).length)
 const taskListPill = computed(() => {
   if (runningTaskCount.value) return `${runningTaskCount.value} 条进行中`
   return `${visibleTasks.value.length} 条任务`
@@ -533,6 +545,10 @@ const setTab = async (next) => {
   }
   if (resolved === 'assets') q.section = String(route.query.section || 'accounts')
   if (resolved === 'dispatch') q.dview = String(route.query.dview || 'pipeline')
+  if (resolved === 'session-log') {
+    const s = String(route.query.session || '')
+    if (s) q.session = s
+  }
   if (resolved === 'knowledge') {
     const raw = String(route.query.kview || 'all')
     q.kview = raw === 'playbook' ? 'all' : raw
@@ -596,6 +612,17 @@ const selectCase = (row) => {
     params: { appId: appId.value, taskId: selectedTaskId.value, caseId },
     query: { ...baseQuery(), sn: row.sn || undefined },
   })
+}
+
+const onOpenSessionLog = async (sessionId) => {
+  const sid = String(sessionId || '').trim()
+  tab.value = 'session-log'
+  const q = { ...baseQuery(), tab: 'session-log' }
+  if (sid) q.session = sid
+  try {
+    await goApp(q)
+  } catch (_) { /* ignore dup nav */ }
+  tab.value = 'session-log'
 }
 
 const onOpenTask = async (id) => {
@@ -671,15 +698,15 @@ const loadProjects = async () => {
   }
 }
 
-const loadTasks = async () => {
+const loadTasks = async ({ silent = false } = {}) => {
   if (!appId.value) return
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     const caseIds = (cases.value || []).map((c) => c.case_id).filter(Boolean)
     const { tasks: next } = await fetchTasksForApp(appId.value, { caseIds })
     tasks.value = next
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -705,6 +732,17 @@ const loadCases = async () => {
   casesLoading.value = true
   try {
     const autoRes = await getAppAutomationConfig(appId.value).catch(() => null)
+    const pid = projectId.value || autoRes?.data?.project_id || ''
+    if (pid) {
+      try {
+        const casesRes = await getProjectCases(pid)
+        const rows = casesRes?.data?.cases || []
+        if (rows.length) {
+          cases.value = casesFromProjectRows(rows)
+          return
+        }
+      } catch (_) { /* 回落到流程草稿 */ }
+    }
     const reqs = autoRes?.data?.automation?.qa_process?.requirements || []
     cases.value = generatedCasesFromProcess(reqs)
   } catch (_) {
@@ -926,15 +964,25 @@ const submitRun = async () => {
 }
 
 const refreshLive = async () => {
-  const running = tasks.value.filter((t) => t.status === 'running' || t.status === 'queued')
-  if (!running.length) return
+  const active = liveTasks(tasks.value)
+  if (!active.length) return
+  livePollTick.value += 1
   try {
-    await Promise.all(running.map(async (t) => {
+    await Promise.all(active.map(async (t) => {
       const next = await fetchTaskDetail(t.taskId, t)
       if (next) upsert(next)
     }))
+    if (tab.value === 'tasks' && livePollTick.value % 3 === 0) {
+      await loadTasks({ silent: true })
+    }
   } catch (_) {}
 }
+
+useLiveTaskRefresh({
+  intervalMs: 4000,
+  isEnabled: () => liveTasks(tasks.value).length > 0,
+  poll: refreshLive,
+})
 
 onMounted(async () => {
   const qTask = String(route.query.task || '')
@@ -960,11 +1008,6 @@ onMounted(async () => {
   await Promise.all([loadCases(), loadProjects(), loadProviders(), loadSuites(), loadDevices()])
   await loadTasks()
   await consumeOpenRun()
-  pollTimer.value = setInterval(refreshLive, 20000)
-})
-
-onUnmounted(() => {
-  if (pollTimer.value) clearInterval(pollTimer.value)
 })
 
 watch(appId, async () => {
@@ -974,6 +1017,10 @@ watch(appId, async () => {
   await loadCases()
   await loadSuites()
   await loadTasks()
+})
+
+watch(tab, (id) => {
+  if (id === 'tasks' && appId.value) loadCases()
 })
 
 watch(() => route.query.openRun, (v) => {
@@ -1181,6 +1228,7 @@ watch(selectedCaseIds, () => {
           :seed="selectedTask"
           @open-task="onOpenTask"
           @open-case="selectCase"
+          @open-session-log="onOpenSessionLog"
         >
           <template #actions>
             <template v-if="hasCase">
@@ -1215,6 +1263,10 @@ watch(selectedCaseIds, () => {
         />
       </div>
 
+      <div v-else-if="tab === 'session-log'" class="ws-config fill">
+        <SessionLogPanel :app-id="appId" :initial-session-id="String(route.query.session || '')" />
+      </div>
+
       <div v-else-if="tab === 'dispatch'" class="ws-config fill">
         <DispatchJobPage
           v-if="dispatchCallId"
@@ -1234,6 +1286,7 @@ watch(selectedCaseIds, () => {
           :project-id="projectId"
           :project-name="projectName"
           @open-req="onOpenReq"
+          @cases-changed="loadCases"
         />
       </div>
 

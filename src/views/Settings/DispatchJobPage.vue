@@ -13,6 +13,7 @@ import {
   fmtTokens,
   jobSummary,
   jobTitle,
+  promptVersionLabel,
   relatedWork,
   roleLabel,
   skillLabel,
@@ -159,7 +160,7 @@ onMounted(load)
             <span v-if="idx" class="pipe-line" />
             <span class="pipe-index">{{ idx + 1 }}</span>
             <div class="pipe-body">
-              <strong>{{ skillLabel(step.skill || step.job) }}</strong>
+              <strong>{{ skillLabel(step.skill || step.job) }}<span v-if="promptVersionLabel(step)" class="prompt-ver"> · {{ promptVersionLabel(step) }}</span></strong>
               <small>{{ jobSummary(step) }}</small>
               <small>{{ roleLabel(step.role) }} · {{ fmtTime(step.at) }}</small>
             </div>
@@ -174,7 +175,7 @@ onMounted(load)
         <dl class="facts">
           <div><dt>来源</dt><dd>{{ sourceLabel(selected.source || selected.trigger) }}</dd></div>
           <div><dt>角色</dt><dd>{{ roleLabel(selected.role) }}</dd></div>
-          <div><dt>技能</dt><dd>{{ skillLabel(selected.skill || selected.job) }}</dd></div>
+          <div><dt>技能</dt><dd>{{ skillLabel(selected.skill || selected.job) }}<span v-if="promptVersionLabel(selected)" class="prompt-ver"> · prompt {{ promptVersionLabel(selected) }}</span></dd></div>
           <div><dt>时间</dt><dd>{{ fmtTime(selected.at) }}</dd></div>
           <div><dt>耗时</dt><dd>{{ fmtElapsed(selected.elapsed_ms) }}</dd></div>
           <div><dt>tokens</dt><dd>{{ selected.kind === 'llm' ? `${selected.prompt_tokens || 0} / ${selected.completion_tokens || 0}` : '—' }}</dd></div>
@@ -205,6 +206,12 @@ onMounted(load)
   flex-direction: column;
   overflow: hidden;
   gap: 12px;
+}
+
+.prompt-ver {
+  font-weight: 500;
+  color: var(--settings-muted);
+  font-size: 0.92em;
 }
 
 .header-actions {

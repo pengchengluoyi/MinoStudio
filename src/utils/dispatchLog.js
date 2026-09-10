@@ -131,6 +131,11 @@ export const triggerLabel = (id) => TRIGGER_LABEL[id] || id || '—'
 export const sourceLabel = (id) => SOURCE_LABEL[id] || TRIGGER_LABEL[id] || id || '—'
 export const skillLabel = (id) => SKILL_LABEL[id] || JOB_LABEL[id] || id || '—'
 export const jobLabel = (id) => JOB_LABEL[id] || SKILL_LABEL[id] || id || '—'
+
+export const promptVersionLabel = (row) => {
+  const v = Number(row?.prompt_version || 0)
+  return v > 0 ? `v${v}` : ''
+}
 export const kindLabel = (k) => (k === 'job' ? '流水线节点' : '模型调用')
 export const statusLabel = (s) => ({ done: '完成', running: '进行中', error: '失败', skipped: '跳过' }[s] || s || '—')
 export const statusTagType = (s) => ({ done: 'success', running: 'warning', error: 'danger', skipped: 'info' }[s] || '')
