@@ -62,7 +62,7 @@ if (SCOUT_MANIFEST && !process.env.VITE_SCOUT_MANIFEST_URL) {
 const API_HTTP_PREFIXES = [
   '/auth', '/device', '/sys', '/static', '/settings', '/app-automation', '/webhooks',
   '/feishu', '/project', '/task', '/ability',
-  '/schedule', '/packs', '/api', '/hitl', '/case-runner', '/app_graph',
+  '/schedule', '/packs', '/api', '/hitl', '/case-runner', '/app_graph', '/nav-fsm',
   '/workflow', '/workflow_run', '/releases', '/runtime',
   '/logs', '/file', '/get_api', '/upload',
 ]

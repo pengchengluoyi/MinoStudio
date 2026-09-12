@@ -211,6 +211,53 @@
   overflow: hidden;
 }
 
+/* 整页填满父容器：头/Tab 固定，主体区域自适应并可滚动 */
+.settings-page.is-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: 8px;
+}
+
+.settings-page.is-fill > .settings-page-head,
+.settings-page.is-fill > .settings-page-header,
+.settings-page.is-fill > .settings-tabbar,
+.settings-page.is-fill > .status-banner,
+.settings-page.is-fill > .onboard-banner {
+  flex-shrink: 0;
+}
+
+.settings-fill-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-table-scroll {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+}
+
+.settings-preview-panel {
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: min(52vh, 520px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-preview-panel .graph-card {
+  flex: 1;
+  min-height: 0;
+  min-height: unset;
+}
+
 .settings-table-pager {
   display: flex;
   justify-content: flex-end;

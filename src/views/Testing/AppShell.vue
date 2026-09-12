@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -9,12 +9,14 @@ import {
 import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
 import { getProjectCases } from '@/api/projectCases'
 import { listAIProviders } from '@/api/settings'
-import { getProjects } from '@/api/workReport'
+import { createAppInProject, createProject, getProjects } from '@/api/workReport'
+import { APP_PLATFORM_OPTIONS, APP_PLATFORM_OPTIONS_ADVANCED } from '@/constants/appPlatforms'
 import WorkShell from '@/layouts/WorkShell.vue'
 import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
 import AppConfigPage from '@/views/Settings/AppConfigPage.vue'
 import KnowledgePanel from '@/views/Settings/KnowledgePanel.vue'
 import CasesWorkbench from '@/views/Testing/CasesWorkbench.vue'
+import NavWorkbench from '@/views/Testing/NavWorkbench.vue'
 import AssetsPage from '@/views/Testing/AssetsPage.vue'
 import DispatchPage from '@/views/Settings/DispatchPage.vue'
 import DispatchJobPage from '@/views/Settings/DispatchJobPage.vue'
@@ -58,7 +60,7 @@ const appId = computed(() => String(route.params.appId || ''))
 const appName = computed(() => String(route.query.appName || '应用'))
 const projectName = computed(() => String(route.query.projectName || ''))
 const projectId = computed(() => String(route.query.projectId || ''))
-const VALID_TABS = ['process', 'tasks', 'dispatch', 'session-log', 'cases', 'knowledge', 'assets', 'config']
+const VALID_TABS = ['process', 'tasks', 'dispatch', 'session-log', 'cases', 'navigation', 'knowledge', 'assets', 'config']
 const TESTING_NAV = [
   {
     id: 'process',
@@ -91,6 +93,17 @@ const TESTING_NAV = [
       { id: 'atlas', label: '应用图谱' },
       { id: 'mindmap', label: '脑图' },
       { id: 'library', label: '用例库' },
+    ],
+  },
+  {
+    id: 'navigation',
+    label: '导航',
+    icon: '🧭',
+    color: '#0ea5e9',
+    children: [
+      { id: 'arch', label: '架构' },
+      { id: 'test', label: '测试' },
+      { id: 'config', label: '配置' },
     ],
   },
   {
@@ -174,6 +187,17 @@ const loading = ref(false)
 const { tasks, upsert } = useTestingTaskList(appId)
 const livePollTick = ref(0)
 const projects = ref([])
+const creatingProject = ref(false)
+const createProjectOpen = ref(false)
+const createProjectKind = ref('project')
+const createProjectTarget = ref(null)
+const createProjectForm = reactive({
+  name: '',
+  description: '',
+  platform: 'Mobile',
+})
+const platformChoices = [...APP_PLATFORM_OPTIONS, ...APP_PLATFORM_OPTIONS_ADVANCED]
+const unwrapRow = (res) => (res?.id ? res : (res?.data || res || {}))
 
 const devices = ref([])
 const providers = ref([])
@@ -198,6 +222,7 @@ const activeSub = computed(() => {
     if (raw === 'reqs') return 'mindmap'
     return raw
   }
+  if (tab.value === 'navigation') return String(route.query.nview || 'arch')
   if (tab.value === 'assets') return String(route.query.section || 'accounts')
   if (tab.value === 'dispatch') return String(route.query.dview || 'pipeline')
   if (tab.value === 'knowledge') {
@@ -215,6 +240,7 @@ const itemOpen = ref({
   process: tab.value === 'process',
   tasks: tab.value === 'tasks' || tab.value === 'dispatch' || tab.value === 'session-log',
   cases: tab.value === 'cases',
+  navigation: tab.value === 'navigation',
   knowledge: tab.value === 'knowledge',
   assets: tab.value === 'assets',
   config: tab.value === 'config',
@@ -440,6 +466,20 @@ const replaceQuery = (patch) => {
   return router.replace({ name: 'TestingApp', params: { appId: appId.value }, query: next })
 }
 
+watch(
+  () => [route.query.tab, route.query.view, route.query.nview],
+  ([t, v, nview]) => {
+    if (t === 'cases' && v === 'nav-fsm') {
+      replaceQuery({ ...baseQuery(), tab: 'navigation', nview: 'arch', view: undefined })
+      tab.value = 'navigation'
+    }
+    if (t === 'navigation' && nview === 'audit') {
+      replaceQuery({ ...baseQuery(), tab: 'navigation', nview: 'arch', view: undefined })
+    }
+  },
+  { immediate: true },
+)
+
 const goApp = (query) => {
   const next = { ...baseQuery(), ...query }
   Object.keys(next).forEach((k) => {
@@ -506,6 +546,10 @@ const onSub = (id) => {
     })
     return
   }
+  if (tab.value === 'navigation') {
+    replaceQuery({ ...baseQuery(), tab: 'navigation', nview: id, task: undefined })
+    return
+  }
   if (tab.value === 'assets') {
     replaceQuery({ ...baseQuery(), tab: 'assets', section: id, task: undefined })
     return
@@ -543,6 +587,7 @@ const setTab = async (next) => {
     const rawView = String(route.query.view || 'atlas')
     q.view = (rawView === 'sync' || rawView === 'feishu') ? 'library' : rawView
   }
+  if (resolved === 'navigation') q.nview = String(route.query.nview || 'arch')
   if (resolved === 'assets') q.section = String(route.query.section || 'accounts')
   if (resolved === 'dispatch') q.dview = String(route.query.dview || 'pipeline')
   if (resolved === 'session-log') {
@@ -663,12 +708,80 @@ const openApp = (app, project) => {
   })
 }
 
-const onProjectChange = (pid) => {
-  const project = projects.value.find((p) => p.id === pid)
+const resetCreateProjectForm = () => {
+  createProjectForm.name = ''
+  createProjectForm.description = ''
+  createProjectForm.platform = 'Mobile'
+}
+
+const openCreateProject = () => {
+  createProjectKind.value = 'project'
+  createProjectTarget.value = null
+  resetCreateProjectForm()
+  createProjectOpen.value = true
+}
+
+const openCreateApp = (project) => {
+  if (!project?.id) {
+    openCreateProject()
+    return
+  }
+  createProjectKind.value = 'app'
+  createProjectTarget.value = project
+  resetCreateProjectForm()
+  createProjectOpen.value = true
+}
+
+const submitCreateProject = async () => {
+  const name = createProjectForm.name.trim()
+  if (!name) {
+    ElMessage.warning(createProjectKind.value === 'project' ? '请填写项目名称' : '请填写应用名称')
+    return
+  }
+  creatingProject.value = true
+  try {
+    if (createProjectKind.value === 'project') {
+      const row = unwrapRow(await createProject({
+        name,
+        description: createProjectForm.description.trim(),
+      }))
+      ElMessage.success(`已创建项目「${name}」`)
+      createProjectOpen.value = false
+      await loadProjects()
+      const project = projects.value.find((p) => p.id === row.id) || { ...row, apps: [] }
+      openCreateApp(project)
+      return
+    }
+    const project = createProjectTarget.value
+    if (!project?.id) throw new Error('请先选择项目')
+    const row = unwrapRow(await createAppInProject(project.id, {
+      name,
+      description: createProjectForm.description.trim(),
+      platforms: createProjectForm.platform,
+    }))
+    ElMessage.success(`已创建应用「${name}」`)
+    createProjectOpen.value = false
+    await loadProjects()
+    const fresh = projects.value.find((p) => p.id === project.id) || project
+    const created = (fresh.apps || []).find((a) => a.id === row.id) || { ...row, name }
+    if (created.id) openApp(created, fresh)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '创建失败')
+  } finally {
+    creatingProject.value = false
+  }
+}
+
+const onWorkspaceCommand = (command) => {
+  if (command === '__new_project__') {
+    openCreateProject()
+    return
+  }
+  const project = projects.value.find((p) => p.id === command)
   if (!project) return
   const first = (project.apps || [])[0]
   if (!first) {
-    ElMessage.warning('该项目下还没有工作台，先到测试首页「管理」里补一个挂载点')
+    openCreateApp(project)
     return
   }
   openApp(first, project)
@@ -1047,7 +1160,7 @@ watch(selectedCaseIds, () => {
 <template>
   <WorkShell mode="testing" :create-title="createTitle" :show-create="canCreate" @search="onShellSearch" @create="onShellCreate">
     <template #sidebar>
-      <el-dropdown trigger="click" @command="onProjectChange">
+      <el-dropdown trigger="click" @command="onWorkspaceCommand">
         <button type="button" class="nav-workspace">
           <span class="nav-workspace-avatar">{{ workspaceInitial }}</span>
           <div>
@@ -1058,7 +1171,17 @@ watch(selectedCaseIds, () => {
         </button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item v-for="p in projects" :key="p.id" :command="p.id">{{ p.name }}</el-dropdown-item>
+            <el-dropdown-item
+              v-for="p in projects"
+              :key="p.id"
+              :command="p.id"
+              :class="{ 'is-current': p.id === projectId }"
+            >
+              {{ p.name }}
+            </el-dropdown-item>
+            <el-dropdown-item divided command="__new_project__" class="workspace-create-item">
+              新建项目
+            </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
@@ -1290,6 +1413,17 @@ watch(selectedCaseIds, () => {
         />
       </div>
 
+      <div v-else-if="tab === 'navigation'" class="ws-config fill">
+        <NavWorkbench
+          hide-nav
+          :app-id="appId"
+          :app-name="appName"
+          :project-id="projectId"
+          :project-name="projectName"
+          :section="activeSub"
+        />
+      </div>
+
       <div v-else-if="tab === 'knowledge'" class="ws-config fill">
         <KnowledgePanel
           embedded
@@ -1493,6 +1627,49 @@ watch(selectedCaseIds, () => {
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="createProjectOpen"
+      :title="createProjectKind === 'project' ? '新建项目' : `添加应用 · ${createProjectTarget?.name || ''}`"
+      width="480px"
+      class="mo-confirm-dialog"
+      align-center
+      append-to-body
+      destroy-on-close
+      :close-on-click-modal="!creatingProject"
+    >
+      <el-form label-position="top" @submit.prevent="submitCreateProject">
+        <el-form-item :label="createProjectKind === 'project' ? '项目名称' : '应用名称'" required>
+          <el-input
+            v-model="createProjectForm.name"
+            :placeholder="createProjectKind === 'project' ? '例如 造物秀' : '例如 客户端'"
+            maxlength="40"
+            @keyup.enter="submitCreateProject"
+          />
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input v-model="createProjectForm.description" type="textarea" :rows="2" placeholder="可选" />
+        </el-form-item>
+        <el-form-item v-if="createProjectKind === 'app'" label="覆盖端">
+          <el-radio-group v-model="createProjectForm.platform" class="platform-pick">
+            <el-radio
+              v-for="opt in platformChoices"
+              :key="opt.value"
+              :value="opt.value"
+              border
+            >
+              {{ opt.label }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="creatingProject" @click="createProjectOpen = false">取消</el-button>
+        <el-button type="primary" :loading="creatingProject" @click="submitCreateProject">
+          {{ createProjectKind === 'project' ? '创建项目' : '创建应用' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </WorkShell>
 </template>
 
@@ -1516,6 +1693,22 @@ watch(selectedCaseIds, () => {
 :deep(.el-dropdown) {
   width: 100%;
   display: block;
+}
+
+:deep(.workspace-create-item) {
+  color: var(--mo-primary, #2563eb);
+  font-weight: 650;
+}
+
+:deep(.el-dropdown-menu__item.is-current) {
+  color: var(--mo-primary, #2563eb);
+  font-weight: 650;
+}
+
+.platform-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .search-hits {
   margin-top: 10px;

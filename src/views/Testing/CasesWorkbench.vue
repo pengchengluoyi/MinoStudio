@@ -378,6 +378,14 @@ const deleteSelectedLibraryCases = async () => {
 
 const syncViewFromRoute = () => {
   const raw = String(route.query.view || '')
+  if (raw === 'nav-fsm') {
+    router.replace({
+      name: 'TestingApp',
+      params: { appId: props.appId },
+      query: { ...route.query, tab: 'navigation', nview: 'arch', view: undefined },
+    })
+    return
+  }
   const mapped = raw === 'features' ? 'atlas' : raw === 'reqs' ? 'mindmap' : raw === 'changes' ? 'atlas' : raw
   const fromBookmark = raw === 'sync' || raw === 'feishu'
   view.value = fromBookmark ? 'library' : (VIEWS.some((v) => v.id === mapped) ? mapped : 'atlas')
@@ -859,6 +867,11 @@ onMounted(async () => {
 .cases-workbench > .settings-page-header,
 .cases-workbench > .settings-tabbar {
   flex-shrink: 0;
+}
+
+.cases-workbench > .nav-fsm-panel {
+  flex: 1;
+  min-height: 0;
 }
 
 .header-actions {
