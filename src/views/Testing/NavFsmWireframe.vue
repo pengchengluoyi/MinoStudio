@@ -1,31 +1,80 @@
 <script setup>
-import { computed } from 'vue'
-import { getBaseUrl } from '@/utils/config'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { RGConnectTarget } from '@relation-graph/vue'
+import request from '@/utils/request'
+import { hotspotTargetId, RG_TARGET_HTML } from '@/utils/navRelationGraph'
 
 const props = defineProps({
   wireframe: { type: Object, default: null },
   turnLabel: { type: String, default: '' },
   compact: { type: Boolean, default: false },
+  graphNode: { type: Boolean, default: false },
   appId: { type: String, default: '' },
+  stateId: { type: String, default: '' },
+  connectHotspots: { type: Boolean, default: false },
+  editableHotspots: { type: Boolean, default: false },
+  /** 弹窗大图预览 */
+  preview: { type: Boolean, default: false },
+  /** 架构图画布：与预览同字号，不裁切底栏 */
+  archCanvas: { type: Boolean, default: false },
 })
 
-const screen = computed(() => props.wireframe?.screen || { w: 1080, h: 1920 })
-const regions = computed(() => (Array.isArray(props.wireframe?.regions) ? props.wireframe.regions : []))
+const targetIdFor = (r) => hotspotTargetId(props.stateId, r)
 
-const screenUrl = computed(() => {
+const screen = computed(() => props.wireframe?.screen || { w: 1080, h: 1920 })
+const isFrameLayout = (r) => {
+  const label = String(r?.label || '').trim()
+  const cls = String(r?.class_name || '').trim()
+  return label === 'FrameLayout' || cls === 'FrameLayout'
+}
+
+const regions = computed(() => {
+  const raw = Array.isArray(props.wireframe?.regions) ? props.wireframe.regions : []
+  return raw.filter((r) => !isFrameLayout(r))
+})
+
+const screenPath = computed(() => {
   const cap = props.wireframe?.capture || {}
   const app = String(cap.app_id || props.appId || '').trim()
   const sid = String(cap.session_id || '').trim()
   const tid = Number(cap.turn_id || 0)
   if (!app || !sid || !tid || !cap.has_screenshot) return ''
-  const base = getBaseUrl().replace(/\/$/, '')
-  return `${base}/nav-fsm/${app}/captures/${sid}/turn/${tid}/screen`
+  return `/nav-fsm/${app}/captures/${sid}/turn/${tid}/screen`
+})
+
+const screenBlobUrl = ref('')
+let revokeUrl = ''
+
+const loadScreenBlob = async (path) => {
+  if (revokeUrl) {
+    URL.revokeObjectURL(revokeUrl)
+    revokeUrl = ''
+  }
+  screenBlobUrl.value = ''
+  if (!path) return
+  try {
+    const res = await request.get(path, { responseType: 'blob' })
+    const blob = res?.data
+    if (!blob || !(blob instanceof Blob)) return
+    revokeUrl = URL.createObjectURL(blob)
+    screenBlobUrl.value = revokeUrl
+  } catch {
+    screenBlobUrl.value = ''
+  }
+}
+
+watch(screenPath, (path) => {
+  loadScreenBlob(path)
+}, { immediate: true })
+
+onUnmounted(() => {
+  if (revokeUrl) URL.revokeObjectURL(revokeUrl)
 })
 
 const canvasBg = computed(() => {
-  if (!screenUrl.value) return {}
+  if (!screenBlobUrl.value) return {}
   return {
-    backgroundImage: `url(${screenUrl.value})`,
+    backgroundImage: `url(${screenBlobUrl.value})`,
     backgroundSize: '100% 100%',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
@@ -49,41 +98,82 @@ const regionStyle = (r) => {
   const base = styleRect(r.rect)
   const sw = Number(screen.value.w || 1080)
   const sh = Number(screen.value.h || 1920)
-  const showSnip = screenUrl.value && (r.is_image || r.show_snip)
+  const showSnip = screenBlobUrl.value && (r.is_image || r.show_snip)
   if (!showSnip) return base
   const x = Number(r.rect?.x || 0) * sw
   const y = Number(r.rect?.y || 0) * sh
   return {
     ...base,
-    backgroundImage: `url(${screenUrl.value})`,
+    backgroundImage: `url(${screenBlobUrl.value})`,
     backgroundSize: `${sw}px ${sh}px`,
     backgroundPosition: `-${x}px -${y}px`,
     backgroundRepeat: 'no-repeat',
   }
 }
+
+/** 架构图画布只保留色块与跳转箭头，不叠控件文案 */
+function showWireLabel(r) {
+  if (props.archCanvas) return false
+  return !r.is_image || !screenBlobUrl.value
+}
 </script>
 
 <template>
-  <div class="nav-wireframe" :class="{ 'is-compact': compact }">
+  <div
+    class="nav-wireframe"
+    :class="{
+      'is-compact': compact && !preview && !archCanvas,
+      'is-graph-node': graphNode && !preview,
+      'is-preview': preview,
+      'is-arch-canvas': archCanvas,
+    }"
+  >
     <div v-if="turnLabel" class="wire-kicker">{{ turnLabel }}</div>
     <div class="wire-canvas" role="img" aria-label="屏面线框" :style="canvasBg">
-      <div
-        v-for="r in regions"
-        :key="`${r.source}-${r.id}`"
-        class="wire-region"
-        :class="{
-          'is-vision': r.source === 'vision',
-          'is-hierarchy': r.source === 'hierarchy',
-          'is-image': r.is_image,
-          'has-snip': screenUrl && r.is_image,
-          'is-nav': Boolean(r.nav_to),
-        }"
-        :style="regionStyle(r)"
-        :title="r.nav_to ? `${r.label} → ${r.nav_to}` : r.label"
-      >
-        <span v-if="!r.is_image || !screenUrl" class="wire-label">{{ r.label }}</span>
-        <span v-if="r.nav_to" class="wire-nav">→</span>
-      </div>
+      <template v-for="r in regions" :key="`${r.source}-${r.id}`">
+        <RGConnectTarget
+          v-if="connectHotspots && (r.nav_to || r.clickable)"
+          :target-id="targetIdFor(r)"
+          :target-type="RG_TARGET_HTML"
+          dom-mode="contents"
+          :disable-drag="!editableHotspots"
+          :line-template="{ color: '#2563eb', lineWidth: 2 }"
+          class="wire-region-anchor"
+          :style="regionStyle(r)"
+        >
+          <div
+            class="wire-region wire-region-fill"
+            :class="{
+              'is-vision': r.source === 'vision',
+              'is-hierarchy': r.source === 'hierarchy',
+              'is-image': r.is_image,
+              'has-snip': screenBlobUrl && r.is_image,
+              'is-nav': Boolean(r.nav_to),
+              'is-hotspot': true,
+            }"
+            :title="r.nav_to ? `${r.nav_label || r.label} → ${r.nav_to}` : r.label"
+          >
+            <span v-if="showWireLabel(r)" class="wire-label">{{ r.nav_label || r.label }}</span>
+            <span v-if="r.nav_to" class="wire-nav">→</span>
+          </div>
+        </RGConnectTarget>
+        <div
+          v-else
+          class="wire-region"
+          :class="{
+            'is-vision': r.source === 'vision',
+            'is-hierarchy': r.source === 'hierarchy',
+            'is-image': r.is_image,
+            'has-snip': screenBlobUrl && r.is_image,
+            'is-nav': Boolean(r.nav_to),
+          }"
+          :style="regionStyle(r)"
+          :title="r.nav_to ? `${r.label} → ${r.nav_to}` : r.label"
+        >
+          <span v-if="showWireLabel(r)" class="wire-label">{{ r.label }}</span>
+          <span v-if="r.nav_to" class="wire-nav">→</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -116,6 +206,44 @@ const regionStyle = (r) => {
   overflow: hidden;
 }
 
+.nav-wireframe.is-arch-canvas .wire-canvas,
+.nav-wireframe.is-preview .wire-canvas {
+  max-width: none;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nav-wireframe.is-graph-node.is-arch-canvas .wire-canvas {
+  flex: 1 1 auto;
+  height: 100%;
+  max-height: 100%;
+}
+
+.nav-wireframe.is-arch-canvas .wire-label,
+.nav-wireframe.is-arch-canvas .wire-nav,
+.nav-wireframe.is-arch-canvas .wire-kicker {
+  display: none !important;
+}
+
+.nav-wireframe.is-preview .wire-label {
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.wire-region-anchor {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.wire-region-fill {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
 .wire-region {
   position: absolute;
   border: 1px solid rgba(37, 99, 235, 0.65);
@@ -137,6 +265,7 @@ const regionStyle = (r) => {
   border-color: rgba(15, 23, 42, 0.35);
 }
 
+.wire-region.is-hotspot.is-nav,
 .wire-region.is-nav {
   border-color: #059669;
   box-shadow: 0 0 0 1px rgba(5, 150, 105, 0.35);
@@ -169,6 +298,20 @@ const regionStyle = (r) => {
   max-width: 200px;
   min-height: 360px;
   border-radius: 8px;
+}
+
+.nav-wireframe.is-graph-node {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.nav-wireframe.is-graph-node:not(.is-arch-canvas) .wire-canvas {
+  width: 100%;
+  max-width: none;
+  aspect-ratio: 9 / 16;
+  height: auto;
+  min-height: 0;
 }
 
 .nav-wireframe.is-compact .wire-label {

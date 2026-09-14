@@ -69,6 +69,9 @@ export const getNavCalibrationReport = (appId) =>
 export const getNavFsmLiveGraph = (appId, params = {}) =>
   request({ url: `/nav-fsm/${appId}/live-graph`, method: 'get', params })
 
+export const getNavScreenAtlas = (appId, params = {}) =>
+  request({ url: `/nav-fsm/${appId}/screen-atlas`, method: 'get', params })
+
 export const getNavCandidates = (appId) =>
   request({ url: `/nav-fsm/${appId}/candidates`, method: 'get' })
 

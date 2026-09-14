@@ -15,10 +15,11 @@ const props = defineProps({
 const SECTIONS = {
   arch: { title: '架构', desc: '' },
   test: { title: '测试', desc: '' },
-  config: { title: '配置', desc: '' },
 }
 
-const meta = computed(() => SECTIONS[props.section] || SECTIONS.arch)
+const panelSection = computed(() => (props.section === 'test' ? 'test' : 'arch'))
+
+const meta = computed(() => SECTIONS[panelSection.value] || SECTIONS.arch)
 </script>
 
 <template>
@@ -31,13 +32,13 @@ const meta = computed(() => SECTIONS[props.section] || SECTIONS.arch)
     </header>
 
     <NavFsmTest
-      v-if="section === 'test'"
+      v-if="panelSection === 'test'"
       :app-id="appId"
       :project-id="projectId"
     />
     <NavFsmPanel
       v-else
-      :section="section"
+      section="arch"
       :app-id="appId"
       :project-id="projectId"
       :project-name="projectName"

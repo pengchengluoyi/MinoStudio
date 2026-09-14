@@ -1,4 +1,4 @@
-const DEFAULT_NEXUS = 'http://mino.local:10104'
+const DEFAULT_NEXUS = 'http://127.0.0.1:10104'
 const DEFAULT_SCOUT_MANIFEST =
   'https://github.com/pengchengluoyi/MinoScout/releases/latest/download/manifest.json'
 

@@ -53,8 +53,7 @@ const pkgTagType = (step) => {
     <div v-if="viewMode === 'flow' && flowEdges.length" class="flow-panel">
       <div class="flow-nodes">
         <div v-for="node in flowNodes" :key="node.state_id" class="flow-node">
-          <strong>{{ shortId(node.state_id) }}</strong>
-          <span class="muted">×{{ node.visit_count }}</span>
+          <strong>{{ node.display_name || shortId(node.state_id) }}</strong>
           <el-tag
             v-if="pkgLabel(node.sample)"
             size="small"

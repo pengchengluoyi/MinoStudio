@@ -5,6 +5,9 @@ import request from '@/utils/request'
 export const runCaseRunner = (data) =>
   request({ url: '/case-runner/run', method: 'post', data, timeout: 120000 })
 
+export const runAppExplore = (data) =>
+  request({ url: '/case-runner/explore', method: 'post', data, timeout: 120000 })
+
 export const getCaseRunnerRun = (runId) =>
   request({ url: `/case-runner/run/${runId}`, method: 'get' })
 

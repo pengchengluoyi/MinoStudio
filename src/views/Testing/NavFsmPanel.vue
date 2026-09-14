@@ -3,11 +3,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   clearNavCaptures,
-  getNavFsmLiveGraph,
   getNavMetrics,
+  getNavScreenAtlas,
 } from '@/api/navFsm'
+import { listIntelLinks } from '@/api/appIntel'
+import { buildIntelOverlay } from '@/utils/appIntelOverlay'
+import { cancelTestingTask, getTestingTask, runAppExplore } from '@/api/caseRunner'
 import { useNavFsm } from '@/composables/useNavFsm'
-import NavFsmGraphEditor from '@/views/Testing/NavFsmGraphEditor.vue'
+import NavRelationGraph from '@/views/Testing/NavRelationGraph.vue'
 import '@/views/Settings/settings-ui.css'
 
 const props = defineProps({
@@ -37,14 +40,16 @@ const bootstrapping = ref(false)
 const liveLoading = ref(false)
 const liveGraphMeta = ref(null)
 const trajectory = ref(null)
-const archViewTab = ref('structure')
-let livePollTimer = null
+const archViewTab = ref('nav')
 const setupReady = ref(false)
 const captureReport = ref(null)
 const metrics = ref(null)
 const metricsLoading = ref(false)
 const graphDoc = ref(null)
 const graphReloadKey = ref(0)
+const atlasTabPrefsHintShown = ref(false)
+const intelOverlay = ref(null)
+const intelLinks = ref([])
 
 const runtimeTag = computed(() => {
   if (captureTurns.value > 0 && liveGraphMeta.value?.synced) return { type: 'success', text: '已同步' }
@@ -71,8 +76,6 @@ const publishedDoc = computed(() => {
   return body
 })
 
-const TEMPLATE_SCREEN_IDS = new Set(['page.home', 'page.list', 'page.detail', 'dialog.confirm'])
-
 const frameworkKindLabel = (kind) => String(kind || '').trim().replace(/_/g, '·')
 
 const landmarkFromState = (st) => {
@@ -91,6 +94,8 @@ const landmarkFromState = (st) => {
   return String(st.id || '?')
 }
 
+const atlasMode = computed(() => Boolean(graphDoc.value?.meta?.screen_atlas))
+
 const liveSummary = computed(() => {
   const d = graphDoc.value
   if (!d) return null
@@ -101,13 +106,14 @@ const liveSummary = computed(() => {
   const meta = d.meta || {}
   return {
     stateCount: states.length,
-    entryCount: entries.length,
-    subPageCount: subPages.length,
+    entryCount: atlasMode.value ? 0 : entries.length,
+    subPageCount: atlasMode.value ? 0 : subPages.length,
     edgeCount: navEdges.length,
     captureTurns: Number(captureTurns.value || meta.capture_turns || 0),
     updatedAt: Number(liveGraphMeta.value?.updated_at || d.updated_at || 0),
     trajSteps: Number(trajectory.value?.step_count || 0),
     localizeStates: Number(trajectory.value?.unique_states || 0),
+    atlasMode: atlasMode.value,
   }
 })
 
@@ -120,43 +126,163 @@ const formatTime = (ts) => {
   }
 }
 
-const applyLiveGraph = (payload) => {
+const atlasPayloadStamp = (payload) => {
+  if (!payload?.doc) return ''
+  const u = Number(payload.updated_at || payload.doc?.updated_at || 0)
+  const sc = Number(payload.screen_count || 0)
+  const st = (payload.doc.states || []).length
+  const ed = (payload.doc.edges || []).length
+  return `${u}|${sc}|${st}|${ed}`
+}
+
+const applyAtlas = async (payload, { forceRemount = false } = {}) => {
   if (!payload?.doc) return
-  graphDoc.value = { ...payload.doc }
-  trajectory.value = payload.trajectory || null
+  const stamp = atlasPayloadStamp(payload)
+  const prevStamp = liveGraphMeta.value?.stamp || ''
+  const payloadStateCount = (payload.doc.states || []).length
+  const graphStateCount = (graphDoc.value?.states || []).length
+  const atlasEmpty = Boolean(payload.doc?.meta?.screen_atlas) && payloadStateCount === 0
+  const docUnchanged =
+    stamp &&
+    stamp === prevStamp &&
+    graphDoc.value &&
+    graphStateCount === payloadStateCount &&
+    !atlasEmpty
+
+  if (!docUnchanged) {
+    graphDoc.value = { ...payload.doc }
+    trajectory.value = null
+  }
+
   liveGraphMeta.value = {
-    synced: Boolean(payload.synced),
-    source: payload.source || '',
+    synced: false,
+    source: payload.source || 'screen_atlas',
     updated_at: payload.updated_at || 0,
-    publish_error: payload.publish_error || '',
+    publish_error: '',
+    screen_count: Number(payload.screen_count || 0),
+    stamp,
   }
   const cap = payload.capture || {}
-  if (cap.turns) {
+  if (cap.turns || cap.turns_app) {
     captureReport.value = {
       ...(captureReport.value || {}),
       turns_captured: Number(cap.turns_app || cap.turns || 0),
       turns_system_skipped: Number(cap.turns_system_skipped || 0),
       sessions: Number(cap.sessions || 0),
+      explore_turns: Number(cap.explore_turns || 0),
     }
   }
-  graphReloadKey.value += 1
+  if (!docUnchanged || forceRemount) {
+    graphReloadKey.value += 1
+    await loadIntelOverlay()
+  }
 }
 
-const loadLiveGraph = async (quiet = false) => {
-  liveLoading.value = true
+const loadScreenAtlas = async (quiet = false) => {
+  if (!quiet) liveLoading.value = true
   try {
-    const res = await getNavFsmLiveGraph(props.appId, {
-      sync: true,
+    const res = await getNavScreenAtlas(props.appId, {
       project_id: props.projectId || undefined,
     })
-    applyLiveGraph(res?.data || null)
-    await load()
+    const payload = res?.data || null
+    await applyAtlas(payload, { forceRemount: !quiet })
+    const suggested = payload?.doc?.meta?.suggested_tab_bar_prefs
+    if (!quiet && suggested?.labels?.length && !atlasTabPrefsHintShown.value) {
+      atlasTabPrefsHintShown.value = true
+      ElMessage.warning({
+        message: `底栏 Tab 未写全，请在 NavFSM meta 保存 tab_bar_prefs.labels：${suggested.labels.join(' / ')}`,
+        duration: 8000,
+      })
+    }
   } catch (e) {
+    graphDoc.value =
+      props.section === 'arch'
+        ? {
+            ...emptyGraphDoc(),
+            meta: { screen_atlas: true, atlas_layout: 'empty', capture_turns: 0 },
+          }
+        : emptyGraphDoc()
+    graphReloadKey.value += 1
     if (!quiet) {
-      ElMessage.error(e?.response?.data?.detail || e?.message || '加载导航图失败')
+      ElMessage.error(e?.response?.data?.detail || e?.message || '加载屏面图谱失败')
     }
   } finally {
     liveLoading.value = false
+  }
+}
+
+const exploring = ref(false)
+const stoppingExplore = ref(false)
+const exploreRunId = ref('')
+const exploreLive = ref(false)
+let explorePollTimer = null
+
+const syncExploreStatus = async () => {
+  if (!exploreRunId.value) {
+    exploreLive.value = false
+    return
+  }
+  try {
+    const res = await getTestingTask(exploreRunId.value)
+    const task = res?.data || {}
+    const st = String(task.status || '').toLowerCase()
+    const wasLive = exploreLive.value
+    exploreLive.value = st === 'running' || st === 'queued'
+    if (exploreLive.value && props.section === 'arch') {
+      await loadScreenAtlas(true)
+    } else if (wasLive && !exploreLive.value && props.section === 'arch') {
+      await loadScreenAtlas(true)
+    }
+    if (!exploreLive.value) exploreRunId.value = ''
+  } catch {
+    exploreLive.value = false
+  }
+}
+
+const startExplorePoll = () => {
+  if (explorePollTimer) return
+  explorePollTimer = window.setInterval(() => { syncExploreStatus() }, 4000)
+}
+
+const stopExplorePoll = () => {
+  if (!explorePollTimer) return
+  window.clearInterval(explorePollTimer)
+  explorePollTimer = null
+}
+
+const onStartExplore = async () => {
+  exploring.value = true
+  try {
+    const res = await runAppExplore({
+      app_id: props.appId,
+      max_steps: 80,
+      max_idle_steps: 15,
+      async_exec: true,
+    })
+    const task = res?.data || {}
+    exploreRunId.value = String(task.run_id || task.task_id || '')
+    exploreLive.value = String(task.status || '').toLowerCase() === 'running'
+    startExplorePoll()
+    ElMessage.success('应用探索已启动，采集将自动更新图谱')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '发起探索失败')
+  } finally {
+    exploring.value = false
+  }
+}
+
+const onStopExplore = async () => {
+  if (!exploreRunId.value) return
+  stoppingExplore.value = true
+  try {
+    await cancelTestingTask(exploreRunId.value)
+    exploreLive.value = false
+    exploreRunId.value = ''
+    ElMessage.success('探索已停止')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '停止探索失败')
+  } finally {
+    stoppingExplore.value = false
   }
 }
 
@@ -182,6 +308,9 @@ const onClearCaptures = async () => {
     captureReport.value = null
     graphReloadKey.value += 1
     await load()
+    if (props.section === 'arch') {
+      await loadScreenAtlas(true)
+    }
     ElMessage.success(n ? `已清空 ${n} 步采集` : '已清空')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '清空失败')
@@ -203,29 +332,70 @@ const emptyGraphDoc = () => ({
   edges: [],
 })
 
-const syncGraphFromDoc = () => {
+const loadIntelOverlay = async () => {
+  if (!props.appId) {
+    intelOverlay.value = null
+    return
+  }
+  try {
+    const res = await listIntelLinks(props.appId)
+    intelLinks.value = res?.data?.items || []
+  } catch {
+    intelLinks.value = []
+  }
+  intelOverlay.value = buildIntelOverlay(graphDoc.value || doc.value, intelLinks.value)
+}
+
+const syncGraphFromDoc = async () => {
   if (!doc.value) {
     graphDoc.value = emptyGraphDoc()
     graphReloadKey.value += 1
+    await loadIntelOverlay()
     return
   }
   const { runtime_ready, runtime_reason, runtime_reason_human, ...body } = doc.value
   graphDoc.value = { ...body }
   graphReloadKey.value += 1
+  await loadIntelOverlay()
 }
 
-const onGraphDocUpdate = (doc) => {
-  graphDoc.value = doc
+const onGraphDocUpdate = (nextDoc) => {
+  graphDoc.value = nextDoc
+  intelOverlay.value = buildIntelOverlay(nextDoc, intelLinks.value)
+}
+
+const syncManualEdgesMeta = (body) => {
+  const manual = (body.edges || []).filter((e) => e?.meta?.manual)
+  if (!manual.length) return body
+  return {
+    ...body,
+    meta: { ...(body.meta || {}), atlas_manual_edges: manual },
+  }
 }
 
 const onSaveGraphDoc = async () => {
   if (!graphDoc.value) return
-  const body = { ...graphDoc.value }
+  let body = { ...graphDoc.value }
   if (props.projectId && !body.project_id) body.project_id = props.projectId
+  body = syncManualEdgesMeta(body)
   try {
     await save(body)
     ElMessage.success('导航图已保存')
-    await loadLiveGraph(true)
+    await loadScreenAtlas(true)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  }
+}
+
+const onSaveArchDoc = async (nextDoc) => {
+  if (!nextDoc) return
+  let body = syncManualEdgesMeta({ ...nextDoc })
+  if (props.projectId && !body.project_id) body.project_id = props.projectId
+  graphDoc.value = body
+  try {
+    await save(body)
+    ElMessage.success('架构已保存')
+    await loadScreenAtlas(true)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
   }
@@ -236,15 +406,19 @@ const tryAutoSetup = async (quiet = false) => {
   try {
     await load()
     if (hasConfig.value) {
-      syncGraphFromDoc()
+      if (props.section !== 'arch') {
+        await syncGraphFromDoc()
+      }
       setupReady.value = true
       return
     }
 
+    // 架构页只展示 screen-atlas；勿把 NavFSM 四页模板草稿画到画布上
     const boot = await ensureBootstrap(props.projectId)
-    if (boot.doc) {
+    if (props.section !== 'arch' && boot.doc) {
       graphDoc.value = { ...boot.doc }
       graphReloadKey.value += 1
+      await loadIntelOverlay()
     }
 
     setupReady.value = true
@@ -274,33 +448,25 @@ const loadMetrics = async () => {
   }
 }
 
-watch(() => props.section, (section) => {
-  if (section === 'config') {
-    loadMetrics()
-    syncGraphFromDoc()
-  }
-  if (section === 'arch') loadLiveGraph(true)
-}, { immediate: true })
-
-watch(doc, () => {
-  if (props.section === 'config') syncGraphFromDoc()
-})
+watch(
+  () => props.section,
+  () => {
+    loadScreenAtlas(true)
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
-  await tryAutoSetup(true)
-  if (props.section === 'arch') await loadLiveGraph(true)
-  else if (props.section === 'config') {
-    await load()
-    syncGraphFromDoc()
-    await loadMetrics()
+  if (props.section === 'arch') {
+    void tryAutoSetup(true)
+    return
   }
-  livePollTimer = window.setInterval(() => {
-    if (props.section === 'arch') loadLiveGraph(true)
-  }, 15000)
+  await tryAutoSetup(true)
+  await loadScreenAtlas(true)
 })
 
 onUnmounted(() => {
-  if (livePollTimer) window.clearInterval(livePollTimer)
+  stopExplorePoll()
 })
 </script>
 
@@ -322,59 +488,73 @@ onUnmounted(() => {
           <div class="published-meta">
             <el-tag :type="runtimeTag.type" size="small" effect="plain">{{ runtimeTag.text }}</el-tag>
             <span v-if="liveSummary" class="published-stats muted">
-              {{ liveSummary.stateCount }} 页 · {{ liveSummary.entryCount }} Tab · {{ liveSummary.subPageCount }} 子页
-              · {{ liveSummary.edgeCount }} 边 · {{ captureTurns }} 步采集 · {{ formatTime(liveSummary.updatedAt) }}
+              <template v-if="liveSummary.atlasMode">
+                {{ liveSummary.stateCount }} 屏 · {{ liveSummary.edgeCount }} 转移
+                · {{ captureTurns }} 步采集 · {{ formatTime(liveSummary.updatedAt) }}
+              </template>
+              <template v-else>
+                {{ liveSummary.stateCount }} 页 · {{ liveSummary.entryCount }} Tab · {{ liveSummary.subPageCount }} 子页
+                · {{ liveSummary.edgeCount }} 边 · {{ captureTurns }} 步采集 · {{ formatTime(liveSummary.updatedAt) }}
+              </template>
             </span>
           </div>
           <div class="published-actions">
+            <el-button
+              v-if="exploreLive"
+              size="small"
+              type="warning"
+              :loading="stoppingExplore"
+              @click="onStopExplore"
+            >
+              停止探索
+            </el-button>
+            <el-button
+              v-else
+              size="small"
+              type="primary"
+              :loading="exploring"
+              @click="onStartExplore"
+            >
+              发起探索
+            </el-button>
             <el-button size="small" type="danger" plain :loading="clearingCaptures" @click="onClearCaptures">
               清空采集
             </el-button>
-            <el-button size="small" :loading="liveLoading" @click="loadLiveGraph()">刷新</el-button>
+            <el-button size="small" :loading="liveLoading" @click="loadScreenAtlas()">刷新</el-button>
           </div>
         </div>
         <div class="graph-view-tabs">
           <button type="button" class="gv-tab" :class="{ active: archViewTab === 'structure' }" @click="archViewTab = 'structure'">结构图</button>
           <button type="button" class="gv-tab" :class="{ active: archViewTab === 'nav' }" @click="archViewTab = 'nav'">跳转图</button>
+          <span class="intel-legend muted">
+            <span class="il wiki">知</span> wiki 挂接
+            <span class="il doc">文</span> 文档溯源
+            <span class="il gap">缺 wiki</span> 待补
+          </span>
         </div>
         <div class="settings-preview-panel published-graph-wrap">
-          <NavFsmGraphEditor
-            v-if="graphDoc"
+          <p v-if="graphDoc && !(graphDoc.states || []).length" class="muted empty-hint">
+            暂无屏面采集。跑一条用例或点「发起探索」后，这里会按采集生成架构图。
+          </p>
+          <NavRelationGraph
+            v-else-if="graphDoc"
             :key="`live-${graphReloadKey}-${archViewTab}`"
             :doc="graphDoc"
             :app-id="appId"
+            :app-name="appName"
             :project-id="projectId"
             :arch-view="archViewTab"
-            mode="preview"
+            :intel-overlay="intelOverlay"
+            variant="arch"
             class="published-graph"
+            @update:doc="onGraphDocUpdate"
+            @save-doc="onSaveArchDoc"
           />
           <p v-else class="muted empty-hint">暂无</p>
         </div>
       </section>
     </div>
 
-    <div v-else-if="section === 'config'" class="settings-fill-body advanced-body">
-      <section class="settings-card graph-card settings-fill-body">
-        <div class="published-toolbar">
-          <div v-if="metrics" class="published-meta metrics-inline muted">
-            <span>guard_fp {{ metrics.guard_fp ?? '—' }}</span>
-            <span>localize {{ metrics.localize_hit_rate ?? '—' }}</span>
-          </div>
-          <div class="published-actions">
-            <el-button size="small" :loading="metricsLoading" @click="loadMetrics">刷新指标</el-button>
-            <el-button size="small" type="primary" :loading="saving" @click="onSaveGraphDoc">保存图形</el-button>
-          </div>
-        </div>
-        <NavFsmGraphEditor
-          :key="`graph-${graphReloadKey}`"
-          :doc="graphDoc"
-          :app-id="appId"
-          :project-id="projectId"
-          mode="edit"
-          @update:doc="onGraphDocUpdate"
-        />
-      </section>
-    </div>
   </div>
 </template>
 
@@ -475,8 +655,42 @@ onUnmounted(() => {
 
 .graph-view-tabs {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+.intel-legend {
+  margin-left: auto;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.intel-legend .il {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-right: 2px;
+}
+
+.intel-legend .il.wiki {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.intel-legend .il.doc {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.intel-legend .il.gap {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 
 .gv-tab {

@@ -15,6 +15,8 @@ import WorkShell from '@/layouts/WorkShell.vue'
 import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
 import AppConfigPage from '@/views/Settings/AppConfigPage.vue'
 import KnowledgePanel from '@/views/Settings/KnowledgePanel.vue'
+import DocLibraryPanel from '@/views/Testing/DocLibraryPanel.vue'
+import AppIntelPanel from '@/views/Testing/AppIntelPanel.vue'
 import CasesWorkbench from '@/views/Testing/CasesWorkbench.vue'
 import NavWorkbench from '@/views/Testing/NavWorkbench.vue'
 import AssetsPage from '@/views/Testing/AssetsPage.vue'
@@ -60,7 +62,7 @@ const appId = computed(() => String(route.params.appId || ''))
 const appName = computed(() => String(route.query.appName || '应用'))
 const projectName = computed(() => String(route.query.projectName || ''))
 const projectId = computed(() => String(route.query.projectId || ''))
-const VALID_TABS = ['process', 'tasks', 'dispatch', 'session-log', 'cases', 'navigation', 'knowledge', 'assets', 'config']
+const VALID_TABS = ['process', 'tasks', 'dispatch', 'session-log', 'cases', 'navigation', 'knowledge', 'docs', 'intel', 'assets', 'config']
 const TESTING_NAV = [
   {
     id: 'process',
@@ -103,7 +105,6 @@ const TESTING_NAV = [
     children: [
       { id: 'arch', label: '架构' },
       { id: 'test', label: '测试' },
-      { id: 'config', label: '配置' },
     ],
   },
   {
@@ -115,6 +116,18 @@ const TESTING_NAV = [
       { id: 'pending', label: '待审核' },
       { id: 'all', label: '已通过' },
     ],
+  },
+  {
+    id: 'docs',
+    label: '文档',
+    icon: '📄',
+    color: '#14b8a6',
+  },
+  {
+    id: 'intel',
+    label: '信息基座',
+    icon: '🧩',
+    color: '#0d9488',
   },
   {
     id: 'assets',
@@ -242,6 +255,8 @@ const itemOpen = ref({
   cases: tab.value === 'cases',
   navigation: tab.value === 'navigation',
   knowledge: tab.value === 'knowledge',
+  docs: tab.value === 'docs',
+  intel: tab.value === 'intel',
   assets: tab.value === 'assets',
   config: tab.value === 'config',
 })
@@ -473,7 +488,7 @@ watch(
       replaceQuery({ ...baseQuery(), tab: 'navigation', nview: 'arch', view: undefined })
       tab.value = 'navigation'
     }
-    if (t === 'navigation' && nview === 'audit') {
+    if (t === 'navigation' && (nview === 'audit' || nview === 'config')) {
       replaceQuery({ ...baseQuery(), tab: 'navigation', nview: 'arch', view: undefined })
     }
   },
@@ -1433,6 +1448,24 @@ watch(selectedCaseIds, () => {
           :project-id="projectId"
           :app-name="appName"
           :review-filter="activeSub"
+        />
+      </div>
+
+      <div v-else-if="tab === 'docs'" class="ws-config fill">
+        <DocLibraryPanel
+          hide-nav
+          :app-id="appId"
+          :project-id="projectId"
+          :app-name="appName"
+        />
+      </div>
+
+      <div v-else-if="tab === 'intel'" class="ws-config fill">
+        <AppIntelPanel
+          hide-nav
+          :app-id="appId"
+          :project-id="projectId"
+          :app-name="appName"
         />
       </div>
 

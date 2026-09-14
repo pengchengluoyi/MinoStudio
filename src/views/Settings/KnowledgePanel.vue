@@ -27,7 +27,7 @@ const SOURCE_LABEL = {
   task_run: '任务汇总',
   requirement: '需求文档',
   release: '发版说明',
-  doc: '技术文档',
+  doc: '需求文档',
   trace: '执行轨迹',
   login_learn: '登录学习',
 }
@@ -174,7 +174,9 @@ const appItems = computed(() => {
           .split(/[,，、\s]+/)
           .map((s) => s.trim())
           .filter(Boolean)
-    return ids.includes(props.appId)
+    if (!ids.length) return true
+    if (ids.includes(props.appId)) return true
+    return Boolean(props.projectId && ids.includes(props.projectId))
   })
 })
 

@@ -54,7 +54,7 @@ function detectScoutManifestUrl() {
   return DEFAULT_SCOUT_MANIFEST
 }
 
-const NEXUS = (process.env.VITE_NEXUS_URL || 'http://mino.local:10104').replace(/\/$/, '')
+const NEXUS = (process.env.VITE_NEXUS_URL || 'http://127.0.0.1:10104').replace(/\/$/, '')
 const SCOUT_MANIFEST = detectScoutManifestUrl()
 if (SCOUT_MANIFEST && !process.env.VITE_SCOUT_MANIFEST_URL) {
   process.env.VITE_SCOUT_MANIFEST_URL = SCOUT_MANIFEST

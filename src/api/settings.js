@@ -75,6 +75,72 @@ export const appendAppKnowledge = (appId, item) =>
 export const listAppKnowledge = (appId) =>
   request({ url: `/settings/knowledge/app/${appId}`, method: 'get' })
 
+export const listDocs = (appId, projectId = '') =>
+  request({
+    url: '/settings/docs',
+    method: 'get',
+    params: { app_id: appId, ...(projectId ? { project_id: projectId } : {}) },
+  })
+
+export const searchDocs = (q, appId, limit = 20, vector = false) =>
+  request({
+    url: '/settings/docs/search',
+    method: 'get',
+    params: { q, app_id: appId, limit, ...(vector ? { vector: 1 } : {}) },
+  })
+
+export const patchDocSync = (sourceId, data) =>
+  request({
+    url: `/settings/docs/${encodeURIComponent(sourceId)}/sync`,
+    method: 'patch',
+    data,
+  })
+
+export const syncDocNow = (sourceId) =>
+  request({
+    url: `/settings/docs/${encodeURIComponent(sourceId)}/sync-now`,
+    method: 'post',
+    timeout: 120000,
+  })
+
+export const getDoc = (sourceId) =>
+  request({ url: `/settings/docs/${encodeURIComponent(sourceId)}`, method: 'get' })
+
+export const getDocChunks = (sourceId, offset = 0, limit = 50) =>
+  request({
+    url: `/settings/docs/${encodeURIComponent(sourceId)}/chunks`,
+    method: 'get',
+    params: { offset, limit },
+  })
+
+export const deleteDoc = (sourceId) =>
+  request({ url: `/settings/docs/${encodeURIComponent(sourceId)}`, method: 'delete' })
+
+export const syncFeishuDoc = (data) =>
+  request({ url: '/settings/docs/sync-feishu', method: 'post', data, timeout: 120000 })
+
+export const extractDocKnowledge = (sourceId, params = {}) =>
+  request({
+    url: `/settings/docs/${encodeURIComponent(sourceId)}/extract`,
+    method: 'post',
+    params,
+    timeout: 180000,
+  })
+
+export const uploadDoc = ({ file, appId, projectId = '', title = '' }) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('app_id', appId)
+  if (projectId) fd.append('project_id', projectId)
+  if (title) fd.append('title', title)
+  return request({
+    url: '/settings/docs/upload',
+    method: 'post',
+    data: fd,
+    timeout: 120000,
+  })
+}
+
 export const getFigmaSettings = () =>
   request({ url: '/settings/figma', method: 'get' })
 
