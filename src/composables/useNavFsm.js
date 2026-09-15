@@ -42,7 +42,7 @@ export function useNavFsm(appIdRef) {
         doc.value = null
         runtimeReady.value = false
         runtimeReason.value = '尚未配置导航图'
-        runtimeReasonHuman.value = '还没有发布导航配置。先跑一条用例，再回本页点「一键发布」即可。'
+        runtimeReasonHuman.value = '还没有发布导航配置。跑探索或用例采集后可在架构页查看屏面图。'
         hasConfig.value = false
       } else {
         throw e

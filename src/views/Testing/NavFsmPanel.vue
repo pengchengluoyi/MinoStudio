@@ -5,10 +5,15 @@ import {
   clearNavCaptures,
   getNavMetrics,
   getNavScreenAtlas,
+  putAtlasManualEdges,
+  patchNavStateLabels,
+  postAtlasMergeStates,
+  postAtlasPinCapture,
+  postAtlasSplitCapture,
 } from '@/api/navFsm'
 import { listIntelLinks } from '@/api/appIntel'
 import { buildIntelOverlay } from '@/utils/appIntelOverlay'
-import { cancelTestingTask, getTestingTask, runAppExplore } from '@/api/caseRunner'
+import { cancelTestingTask, getTestingTask, listTestingTasks, runAppExplore } from '@/api/caseRunner'
 import { useNavFsm } from '@/composables/useNavFsm'
 import NavRelationGraph from '@/views/Testing/NavRelationGraph.vue'
 import '@/views/Settings/settings-ui.css'
@@ -47,18 +52,24 @@ const metrics = ref(null)
 const metricsLoading = ref(false)
 const graphDoc = ref(null)
 const graphReloadKey = ref(0)
-const atlasTabPrefsHintShown = ref(false)
 const intelOverlay = ref(null)
 const intelLinks = ref([])
 
 const runtimeTag = computed(() => {
-  if (captureTurns.value > 0 && liveGraphMeta.value?.synced) return { type: 'success', text: '已同步' }
-  if (captureTurns.value > 0) return { type: 'warning', text: '采集中' }
+  if (exploreLive.value) return { type: 'warning', text: '采集中' }
+  if (captureTurns.value > 0) return { type: 'success', text: '已同步' }
   if (hasConfig.value) return { type: 'success', text: '已就绪' }
   return { type: 'info', text: '无采集' }
 })
 
 const statusMessage = computed(() => {
+  if (props.section === 'arch') {
+    if (exploreLive.value) return '正在探索采集，架构图会随新屏面更新。'
+    if (liveSummary.value?.stateCount) {
+      return `架构图按采集聚类：${liveSummary.value.stateCount} 个屏面、${liveSummary.value.edgeCount} 条跳转。`
+    }
+    return '跑探索或用例采集后，这里会按屏面聚类生成架构图。'
+  }
   if (runtimeReady.value && publishedSummary.value) {
     const mode = publishedDoc.value?.meta?.synthesis_mode || ''
     const extra = mode === 'tab_bar' || mode === 'tab_bar_layered' ? '（Tab + 子页面）' : ''
@@ -66,7 +77,7 @@ const statusMessage = computed(() => {
   }
   if (captureReport.value?.runtime_reason_human) return captureReport.value.runtime_reason_human
   if (runtimeReasonHuman.value) return runtimeReasonHuman.value
-  if (!hasConfig.value) return '跑一条用例后，回来点「一键发布」即可启用导航。'
+  if (!hasConfig.value) return '跑探索或用例采集后，这里会按屏面聚类生成架构图。'
   return ''
 })
 
@@ -128,11 +139,11 @@ const formatTime = (ts) => {
 
 const atlasPayloadStamp = (payload) => {
   if (!payload?.doc) return ''
-  const u = Number(payload.updated_at || payload.doc?.updated_at || 0)
+  const h = String(payload.doc?.meta?.atlas_content_hash || '').trim()
   const sc = Number(payload.screen_count || 0)
   const st = (payload.doc.states || []).length
   const ed = (payload.doc.edges || []).length
-  return `${u}|${sc}|${st}|${ed}`
+  return `${h}|${sc}|${st}|${ed}`
 }
 
 const applyAtlas = async (payload, { forceRemount = false } = {}) => {
@@ -155,7 +166,7 @@ const applyAtlas = async (payload, { forceRemount = false } = {}) => {
   }
 
   liveGraphMeta.value = {
-    synced: false,
+    synced: !exploreLive.value,
     source: payload.source || 'screen_atlas',
     updated_at: payload.updated_at || 0,
     publish_error: '',
@@ -186,14 +197,6 @@ const loadScreenAtlas = async (quiet = false) => {
     })
     const payload = res?.data || null
     await applyAtlas(payload, { forceRemount: !quiet })
-    const suggested = payload?.doc?.meta?.suggested_tab_bar_prefs
-    if (!quiet && suggested?.labels?.length && !atlasTabPrefsHintShown.value) {
-      atlasTabPrefsHintShown.value = true
-      ElMessage.warning({
-        message: `底栏 Tab 未写全，请在 NavFSM meta 保存 tab_bar_prefs.labels：${suggested.labels.join(' / ')}`,
-        duration: 8000,
-      })
-    }
   } catch (e) {
     graphDoc.value =
       props.section === 'arch'
@@ -250,6 +253,22 @@ const stopExplorePoll = () => {
   explorePollTimer = null
 }
 
+const claimRunningExplore = async () => {
+  if (!props.appId) return
+  try {
+    const res = await listTestingTasks({ appId: props.appId, status: 'running', limit: 50 })
+    const items = res?.data?.items || []
+    const live = items.find((t) => String(t.run_type || t.runType || '').toLowerCase() === 'explore')
+    if (!live) return
+    exploreRunId.value = String(live.run_id || live.task_id || '')
+    if (!exploreRunId.value) return
+    exploreLive.value = true
+    startExplorePoll()
+  } catch {
+    /* 认领失败不影响画布 */
+  }
+}
+
 const onStartExplore = async () => {
   exploring.value = true
   try {
@@ -278,6 +297,7 @@ const onStopExplore = async () => {
     await cancelTestingTask(exploreRunId.value)
     exploreLive.value = false
     exploreRunId.value = ''
+    stopExplorePoll()
     ElMessage.success('探索已停止')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '停止探索失败')
@@ -291,7 +311,7 @@ const clearingCaptures = ref(false)
 const onClearCaptures = async () => {
   try {
     await ElMessageBox.confirm(
-      '将删除全部被动采集与已发布导航配置，不可恢复。清空后需重新跑用例。',
+      '将删除全部被动采集。已发布的导航配置不会改动。清空后需重新探索或跑用例。',
       '清空采集',
       { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' },
     )
@@ -300,7 +320,7 @@ const onClearCaptures = async () => {
   }
   clearingCaptures.value = true
   try {
-    const res = await clearNavCaptures(props.appId, { also_config: true })
+    const res = await clearNavCaptures(props.appId, { also_config: false })
     const n = Number(res?.data?.deleted_turns || 0)
     graphDoc.value = null
     trajectory.value = null
@@ -389,15 +409,89 @@ const onSaveGraphDoc = async () => {
 
 const onSaveArchDoc = async (nextDoc) => {
   if (!nextDoc) return
-  let body = syncManualEdgesMeta({ ...nextDoc })
-  if (props.projectId && !body.project_id) body.project_id = props.projectId
-  graphDoc.value = body
+  const manual = (nextDoc.edges || []).filter((e) => e?.meta?.manual)
+  graphDoc.value = nextDoc
   try {
-    await save(body)
-    ElMessage.success('架构已保存')
+    await putAtlasManualEdges(props.appId, {
+      edges: manual,
+      project_id: props.projectId || '',
+    })
+    ElMessage.success('手动跳转已保存')
     await loadScreenAtlas(true)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  }
+}
+
+const onPatchArchState = async (st) => {
+  const sid = String(st?.id || '').trim()
+  if (!sid || !props.appId) return
+  const meta = st?.meta && typeof st.meta === 'object' ? st.meta : {}
+  try {
+    await patchNavStateLabels(props.appId, sid, {
+      display_name: String(meta.display_name || '').trim(),
+      aliases: Array.isArray(meta.aliases) ? meta.aliases : [],
+      tab: String(meta.tab || '').trim(),
+      page_role: String(meta.page_role || '').trim(),
+      chrome_texts: Array.isArray(meta.chrome_texts) ? meta.chrome_texts : [],
+      header_title: String(meta.header_title || '').trim(),
+    })
+    await loadScreenAtlas(true)
+    ElMessage.success('页面信息已保存')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '页面信息保存失败')
+  }
+}
+
+const onMergeArchStates = async ({ canonicalId, mergeIds }) => {
+  if (!props.appId || !canonicalId || !mergeIds?.length) return
+  try {
+    await postAtlasMergeStates(props.appId, {
+      canonical_id: canonicalId,
+      merge_ids: mergeIds,
+      project_id: props.projectId || '',
+    })
+    ElMessage.success('已合并到当前页')
+    await loadScreenAtlas(true)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '合并失败')
+  }
+}
+
+const onSplitCapture = async ({ sessionId, turnId }) => {
+  if (!props.appId || !sessionId || !turnId) return
+  try {
+    await ElMessageBox.confirm(
+      '将把该采集帧拆成独立架构节点（刷新图谱后生效）。是否继续？',
+      '拆分采集',
+      { type: 'warning' },
+    )
+    await postAtlasSplitCapture(props.appId, {
+      session_id: sessionId,
+      turn_id: turnId,
+      project_id: props.projectId || '',
+    })
+    ElMessage.success('已标记拆分，正在刷新架构图…')
+    await loadScreenAtlas(true)
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    ElMessage.error(e?.response?.data?.detail || e?.message || '拆分失败')
+  }
+}
+
+const onPinCapture = async ({ sessionId, turnId, stateId }) => {
+  if (!props.appId || !sessionId || !turnId || !stateId) return
+  try {
+    await postAtlasPinCapture(props.appId, {
+      session_id: sessionId,
+      turn_id: turnId,
+      state_id: stateId,
+      project_id: props.projectId || '',
+    })
+    ElMessage.success('已钉到当前页')
+    await loadScreenAtlas(true)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '钉死失败')
   }
 }
 
@@ -405,6 +499,10 @@ const tryAutoSetup = async (quiet = false) => {
   bootstrapping.value = true
   try {
     await load()
+    if (props.section === 'arch') {
+      setupReady.value = true
+      return
+    }
     if (hasConfig.value) {
       if (props.section !== 'arch') {
         await syncGraphFromDoc()
@@ -458,11 +556,13 @@ watch(
 
 onMounted(async () => {
   if (props.section === 'arch') {
-    void tryAutoSetup(true)
+    await tryAutoSetup(true)
+    await claimRunningExplore()
     return
   }
   await tryAutoSetup(true)
   await loadScreenAtlas(true)
+  await claimRunningExplore()
 })
 
 onUnmounted(() => {
@@ -475,7 +575,7 @@ onUnmounted(() => {
     <section v-if="!hasConfig && !setupReady" class="onboard-banner">
       <div class="onboard-main">
         <strong>首次使用</strong>
-        <p>点右侧初始化后，去跑一条手动用例即可开始。</p>
+        <p>点右侧初始化后，跑探索或用例采集即可开始。</p>
       </div>
       <el-button type="primary" size="small" :loading="bootstrapping" @click="tryAutoSetup(false)">
         初始化
@@ -549,6 +649,10 @@ onUnmounted(() => {
             class="published-graph"
             @update:doc="onGraphDocUpdate"
             @save-doc="onSaveArchDoc"
+            @patch-state="onPatchArchState"
+            @merge-states="onMergeArchStates"
+            @split-capture="onSplitCapture"
+            @pin-capture="onPinCapture"
           />
           <p v-else class="muted empty-hint">暂无</p>
         </div>

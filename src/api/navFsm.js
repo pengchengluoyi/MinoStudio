@@ -9,6 +9,9 @@ export const getNavFsm = (appId, params = {}) =>
 export const putNavFsm = (appId, doc) =>
   request({ url: `/nav-fsm/${appId}`, method: 'put', data: doc })
 
+export const putAtlasManualEdges = (appId, data) =>
+  request({ url: `/nav-fsm/${appId}/atlas-manual-edges`, method: 'put', data })
+
 export const deleteNavFsm = (appId, params = {}) =>
   request({ url: `/nav-fsm/${appId}`, method: 'delete', params })
 
@@ -92,3 +95,31 @@ export const submitNavFeedback = (appId, data) =>
 
 export const planNavRoute = (appId, data) =>
   request({ url: `/nav-fsm/${appId}/route`, method: 'post', data })
+
+export const patchNavStateLabels = (appId, stateId, data) =>
+  request({
+    url: `/nav-fsm/${appId}/states/${encodeURIComponent(stateId)}/labels`,
+    method: 'patch',
+    data,
+  })
+
+export const postAtlasMergeStates = (appId, data) =>
+  request({
+    url: `/nav-fsm/${appId}/atlas-merge-states`,
+    method: 'post',
+    data,
+  })
+
+export const postAtlasPinCapture = (appId, data) =>
+  request({
+    url: `/nav-fsm/${appId}/atlas-pin-capture`,
+    method: 'post',
+    data,
+  })
+
+export const postAtlasSplitCapture = (appId, data) =>
+  request({
+    url: `/nav-fsm/${appId}/atlas-split-capture`,
+    method: 'post',
+    data,
+  })

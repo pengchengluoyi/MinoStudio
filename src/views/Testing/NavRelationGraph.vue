@@ -35,7 +35,19 @@ const props = defineProps({
   intelOverlay: { type: Object, default: null },
 })
 
-const emit = defineEmits(['update:doc', 'save-doc'])
+const emit = defineEmits(['update:doc', 'save-doc', 'patch-state', 'merge-states', 'split-capture', 'pin-capture'])
+
+const allStateOptions = computed(() =>
+  (baseDoc.value.states || []).map((s) => ({
+    id: stateId(s),
+    label: String(s?.meta?.display_name || s?.id || '').trim(),
+  })),
+)
+
+const atlasTurnRefs = computed(() => {
+  const rows = baseDoc.value?.meta?.atlas_turn_refs
+  return Array.isArray(rows) ? rows : []
+})
 
 const isArch = computed(() => props.variant === 'arch')
 const isPreview = computed(() => !isArch.value && props.mode === 'preview')
@@ -57,7 +69,7 @@ let hoverHideTimer = null
 const dialogVisible = ref(false)
 const dialogMode = ref('preview')
 const dialogTitle = ref('')
-const dialogJson = ref('')
+const dialogState = ref(null)
 const dialogWireframe = ref(null)
 
 const baseDoc = computed(() => {
@@ -213,44 +225,75 @@ const openDialog = (mode) => {
   if (!node) return
   dialogMode.value = mode
   dialogTitle.value = hoverTitle.value
-  dialogJson.value = pickStateJson(node)
+  const sid = String(node?.id || '')
+  const st = (baseDoc.value.states || []).find((s) => stateId(s) === sid)
+  dialogState.value = st ? JSON.parse(JSON.stringify(st)) : { id: sid, kind: 'page', meta: {} }
   dialogWireframe.value = node.data?.wireframe || null
   dialogVisible.value = true
   hoverVisible.value = false
 }
 
+const onDialogSave = (parsed) => {
+  if (!applyStateObject(parsed, { persist: true, fromDialog: true })) return
+  dialogVisible.value = false
+}
+
+const onDialogMerge = (payload) => {
+  emit('merge-states', payload)
+  dialogVisible.value = false
+}
+
+const onDialogSplitCapture = (payload) => {
+  emit('split-capture', payload)
+}
+
+const onDialogPinCapture = (payload) => {
+  emit('pin-capture', payload)
+}
+
+const applyStateObject = (parsed, { persist = true, fromDialog = false } = {}) => {
+  try {
+    const next = JSON.parse(JSON.stringify(baseDoc.value))
+    if (selectedKind.value !== 'state') return false
+    const oldId = selectedStateId.value
+    const newId = String(parsed.id || oldId).trim()
+    const idx = (next.states || []).findIndex((s) => stateId(s) === oldId)
+    if (idx < 0) throw new Error('状态不存在')
+    next.states[idx] = { ...parsed, id: newId }
+    next.edges = (next.edges || []).map((e) => {
+      const patch = { ...e }
+      if (String(e.from) === oldId) patch.from = newId
+      if (String(e.to) === oldId) patch.to = newId
+      return patch
+    })
+    let out = next
+    if (newId !== oldId) out = renameStateInDoc(out, oldId, newId)
+    const manual = (out.edges || []).filter((e) => e?.meta?.manual)
+    out.meta = { ...(out.meta || {}), atlas_manual_edges: manual }
+    emit('update:doc', out)
+    if (persist) {
+      emit('save-doc', out)
+      if (fromDialog && isArch.value) {
+        emit('patch-state', out.states[idx])
+      }
+    }
+    selectedStateId.value = newId
+    inspectorJson.value = JSON.stringify(out.states[idx], null, 2)
+    if (!(fromDialog && isArch.value)) {
+      ElMessage.success('已保存')
+    }
+    loadGraph()
+    return true
+  } catch (e) {
+    ElMessage.error(e?.message || '保存失败')
+    return false
+  }
+}
+
 const applyParsedJson = (raw, { persist } = { persist: false }) => {
   try {
     const parsed = JSON.parse(raw || '{}')
-    const next = JSON.parse(JSON.stringify(baseDoc.value))
-    if (selectedKind.value === 'state') {
-      const oldId = selectedStateId.value
-      const newId = String(parsed.id || oldId).trim()
-      const idx = (next.states || []).findIndex((s) => stateId(s) === oldId)
-      if (idx < 0) throw new Error('状态不存在')
-      next.states[idx] = { ...parsed, id: newId }
-      next.edges = (next.edges || []).map((e) => {
-        const patch = { ...e }
-        if (String(e.from) === oldId) patch.from = newId
-        if (String(e.to) === oldId) patch.to = newId
-        return patch
-      })
-      let out = next
-      if (newId !== oldId) out = renameStateInDoc(out, oldId, newId)
-      if (persist) {
-        const manual = (out.edges || []).filter((e) => e?.meta?.manual)
-        out.meta = { ...(out.meta || {}), atlas_manual_edges: manual }
-        emit('save-doc', out)
-      } else {
-        emit('update:doc', out)
-      }
-      selectedStateId.value = newId
-      inspectorJson.value = JSON.stringify(out.states[idx], null, 2)
-      ElMessage.success(persist ? '已保存' : '已应用')
-      loadGraph()
-      return true
-    }
-    return false
+    return applyStateObject(parsed, { persist })
   } catch (e) {
     ElMessage.error(e?.message || 'JSON 无效')
     return false
@@ -470,11 +513,15 @@ const onLineBeCreated = async (lineInfo) => {
       v-model:visible="dialogVisible"
       :mode="dialogMode"
       :title="dialogTitle"
-      :json-text="dialogJson"
+      :state="dialogState"
       :wireframe="dialogWireframe"
       :app-id="appId"
-      @apply="(t) => applyParsedJson(t, { persist: false }) && (dialogVisible = false)"
-      @save="(t) => applyParsedJson(t, { persist: true }) && (dialogVisible = false)"
+      :all-state-options="allStateOptions"
+      :atlas-turn-refs="atlasTurnRefs"
+      @save="onDialogSave"
+      @merge-states="onDialogMerge"
+      @split-capture="onDialogSplitCapture"
+      @pin-capture="onDialogPinCapture"
     />
   </div>
 </template>

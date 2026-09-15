@@ -326,9 +326,6 @@ export function docToRelationGraph(doc, options = {}) {
     const tabSlot = isEntry ? tabSlotForLabel(doc, tabLabel) : null
     const wf = applyNavHintsToWireframe(wireframeForState(doc, sid), sid, allEdges)
     const hasWf = showWireframe && (wf.regions?.length > 0)
-    if (isAtlas && variant === 'arch' && !hasWf && sid !== launchId && sid !== homeStateId) {
-      continue
-    }
     if (!rootId && (sid === launchId || sid === homeStateId || isEntry)) rootId = sid
     nodes.push({
       id: sid,
@@ -360,7 +357,7 @@ export function docToRelationGraph(doc, options = {}) {
   }
 
   const tabEntrySet = new Set(entries)
-  const showNav = archView === 'nav' || archView === 'structure'
+  const showNav = archMode ? archView === 'nav' : (archView === 'nav' || archView === 'structure')
   const showHierarchy = archView === 'structure'
   for (const ed of allEdges) {
     const from = edgeFrom(ed)
@@ -369,7 +366,7 @@ export function docToRelationGraph(doc, options = {}) {
     const kind = edgeKind(ed)
     const meta = ed.meta || {}
     if (kind === 'hierarchy') {
-      if (!showHierarchy || archMode) continue
+      if (!showHierarchy) continue
       if (tabEntrySet.has(from)) continue
       pushLine({
         from,
@@ -384,11 +381,11 @@ export function docToRelationGraph(doc, options = {}) {
       continue
     }
     if (kind === 'tab_scope') {
-      if (archView === 'nav' || (archMode && isAtlas)) continue
+      if (!showHierarchy) continue
       const hasNav = allEdges.some(
         (e) => edgeKind(e) === 'nav' && edgeFrom(e) === from && edgeTo(e) === to,
       )
-      if (hasNav) continue
+      if (hasNav && showNav) continue
       pushLine({
         from,
         to,
@@ -427,7 +424,7 @@ export function docToRelationGraph(doc, options = {}) {
     const sid = stateId(st)
     const parent = String(st?.meta?.parent_state_id || '').trim()
     if (!parent || parent === sid || tabEntrySet.has(parent)) continue
-    if (!showHierarchy || archMode) continue
+    if (!showHierarchy) continue
     if (allEdges.some((e) => edgeKind(e) === 'hierarchy' && edgeFrom(e) === parent && edgeTo(e) === sid)) {
       continue
     }
