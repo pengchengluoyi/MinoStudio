@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import NavFsmWireframe from '@/views/Testing/NavFsmWireframe.vue'
 import { archGraphContext, archGraphHover, archGraphLeave } from '@/utils/navGraphArchBridge'
+import { LAYOUT_CLASS_LABELS } from '@/utils/navRelationGraph'
 
 const props = defineProps({
   node: { type: Object, default: null },
@@ -53,11 +54,23 @@ const onContextMenu = (e) => {
   >
     <strong v-if="nodeData.showWireframe" class="node-head">{{ node?.text || nodeData.stateId }}</strong>
     <p v-if="nodeData.showWireframe && nodeData.subhead" class="node-sub muted">{{ nodeData.subhead }}</p>
+    <div
+      v-if="nodeData.showWireframe && (nodeData.layoutClass || nodeData.morphCount)"
+      class="layout-badges"
+    >
+      <span v-if="nodeData.layoutClass" class="lb layout">
+        {{ LAYOUT_CLASS_LABELS[nodeData.layoutClass] || nodeData.layoutClass }}
+      </span>
+      <span v-if="nodeData.morphCount > 0" class="lb morph">多态 {{ nodeData.morphCount }}</span>
+      <span v-if="nodeData.evidenceTier" class="lb tier">{{ nodeData.evidenceTier }}</span>
+    </div>
     <NavFsmWireframe
       v-if="nodeData.showWireframe"
       :wireframe="nodeData.wireframe"
       :app-id="nodeData.appId || ''"
       :state-id="nodeData.stateId || node?.id || ''"
+      :layout-class="nodeData.layoutClass || ''"
+      :layout-extent="nodeData.layoutExtent || null"
       :connect-hotspots="Boolean(nodeData.connectHotspots)"
       :editable-hotspots="Boolean(nodeData.editableHotspots)"
       graph-node
@@ -128,6 +141,11 @@ const onContextMenu = (e) => {
   max-height: 100% !important;
 }
 
+.rg-nav-node.is-arch-wf :deep(.nav-wireframe) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .node-head {
   font-size: 11px;
   font-weight: 700;
@@ -146,6 +164,32 @@ const onContextMenu = (e) => {
   flex-shrink: 0;
   max-height: 2.5em;
   overflow: hidden;
+}
+
+.layout-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.lb {
+  font-size: 9px;
+  line-height: 1.2;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.lb.morph {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.lb.tier {
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .rg-nav-node.entry {

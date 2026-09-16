@@ -73,9 +73,32 @@ const ROLE_LABELS = {
   main: '子页',
 }
 
+export const LAYOUT_CLASS_LABELS = {
+  fixed_viewport: '固定视口',
+  infinite_feed: '信息流',
+  horizontal_pager: '横滑多态',
+  transient_overlay: '浮层',
+  unknown: '未知布局',
+}
+
+export function layoutExtentLabel(extent) {
+  const e = extent && typeof extent === 'object' ? extent : {}
+  const h = e.height === 'infinite' ? '∞高' : '有限高'
+  const w = e.width === 'infinite' ? '∞宽' : '有限宽'
+  return `${h} · ${w}`
+}
+
 export function archNodeSubhead(st, intel = {}) {
   const meta = st?.meta || {}
   const bits = []
+  const lc = String(meta.layout_class || '').trim()
+  if (LAYOUT_CLASS_LABELS[lc]) bits.push(LAYOUT_CLASS_LABELS[lc])
+  const tier = String(meta.evidence_tier || '').trim()
+  if (tier) bits.push(`证据 ${tier}`)
+  const morph = Number(meta.morph_count || 0)
+  if (morph > 0) bits.push(`多态 ×${morph}`)
+  const ext = meta.layout_extent
+  if (ext && (ext.height || ext.width)) bits.push(layoutExtentLabel(ext))
   const role = String(meta.page_role || '').trim()
   if (ROLE_LABELS[role]) bits.push(ROLE_LABELS[role])
   const vc = Number(meta.visit_count || 0)
@@ -287,8 +310,9 @@ export function docToRelationGraph(doc, options = {}) {
   const WF_W = 260
   const WF_HEAD = 40
   const WF_CANVAS_H = Math.round(WF_W * (16 / 9))
-  const WF_H = WF_HEAD + WF_CANVAS_H + 12
   const archMode = String(options.variant || '') === 'arch'
+  const WF_META_EXTRA = archMode ? 44 : 0
+  const WF_H = WF_HEAD + WF_META_EXTRA + WF_CANVAS_H + 12
   const archView = String(options.archView || 'structure')
   let rootId = ''
 
@@ -325,6 +349,11 @@ export function docToRelationGraph(doc, options = {}) {
     const tabLabel = String(labelsMap[sid] || st?.meta?.tab || '').trim()
     const tabSlot = isEntry ? tabSlotForLabel(doc, tabLabel) : null
     const wf = applyNavHintsToWireframe(wireframeForState(doc, sid), sid, allEdges)
+    const meta = st?.meta || {}
+    const layoutClass = String(meta.layout_class || '').trim()
+    const layoutExtent = meta.layout_extent && typeof meta.layout_extent === 'object' ? meta.layout_extent : {}
+    const morphCount = Number(meta.morph_count || 0)
+    const evidenceTier = String(meta.evidence_tier || '').trim()
     const hasWf = showWireframe && (wf.regions?.length > 0)
     if (!rootId && (sid === launchId || sid === homeStateId || isEntry)) rootId = sid
     nodes.push({
@@ -348,6 +377,10 @@ export function docToRelationGraph(doc, options = {}) {
         tabSlotParts: Array.isArray(tabSlot?.parts) ? tabSlot.parts : [],
         state: st,
         subhead: archMode ? archNodeSubhead(st, intel) : '',
+        layoutClass,
+        layoutExtent,
+        morphCount,
+        evidenceTier,
       },
     })
   }

@@ -17,6 +17,8 @@ const props = defineProps({
   preview: { type: Boolean, default: false },
   /** 架构图画布：与预览同字号，不裁切底栏 */
   archCanvas: { type: Boolean, default: false },
+  layoutClass: { type: String, default: '' },
+  layoutExtent: { type: Object, default: null },
 })
 
 const targetIdFor = (r) => hotspotTargetId(props.stateId, r)
@@ -94,6 +96,12 @@ const styleRect = (rect) => {
   }
 }
 
+const isFeedRegion = (r) => {
+  const role = String(r?.role || '').toLowerCase()
+  const label = String(r?.label || '').toLowerCase()
+  return role.includes('feed') || role.includes('list') || label.includes('feed')
+}
+
 const regionStyle = (r) => {
   const base = styleRect(r.rect)
   const sw = Number(screen.value.w || 1080)
@@ -129,7 +137,17 @@ function showWireLabel(r) {
     }"
   >
     <div v-if="turnLabel" class="wire-kicker">{{ turnLabel }}</div>
-    <div class="wire-canvas" role="img" aria-label="屏面线框" :style="canvasBg">
+    <div
+      class="wire-canvas"
+      :class="{
+        'is-infinite-feed': layoutClass === 'infinite_feed',
+        'is-horizontal-pager': layoutClass === 'horizontal_pager',
+        'is-fixed-viewport': layoutClass === 'fixed_viewport',
+      }"
+      role="img"
+      aria-label="屏面线框"
+      :style="canvasBg"
+    >
       <template v-for="r in regions" :key="`${r.source}-${r.id}`">
         <RGConnectTarget
           v-if="connectHotspots && (r.nav_to || r.clickable)"
@@ -150,6 +168,7 @@ function showWireLabel(r) {
               'has-snip': screenBlobUrl && r.is_image,
               'is-nav': Boolean(r.nav_to),
               'is-hotspot': true,
+              'is-feed-slot': layoutClass === 'infinite_feed' && isFeedRegion(r),
             }"
             :title="r.nav_to ? `${r.nav_label || r.label} → ${r.nav_to}` : r.label"
           >
@@ -166,6 +185,7 @@ function showWireLabel(r) {
             'is-image': r.is_image,
             'has-snip': screenBlobUrl && r.is_image,
             'is-nav': Boolean(r.nav_to),
+            'is-feed-slot': layoutClass === 'infinite_feed' && isFeedRegion(r),
           }"
           :style="regionStyle(r)"
           :title="r.nav_to ? `${r.label} → ${r.nav_to}` : r.label"
@@ -206,6 +226,27 @@ function showWireLabel(r) {
   overflow: hidden;
 }
 
+.wire-canvas.is-infinite-feed {
+  border-style: dashed;
+  border-color: #94a3b8;
+}
+
+.wire-canvas.is-horizontal-pager::after {
+  content: '⇄';
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  font-size: 11px;
+  color: #b45309;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.wire-region.is-feed-slot {
+  border-style: dashed !important;
+  opacity: 0.92;
+}
+
 .nav-wireframe.is-arch-canvas .wire-canvas,
 .nav-wireframe.is-preview .wire-canvas {
   max-width: none;
@@ -216,10 +257,19 @@ function showWireLabel(r) {
   overflow: hidden;
 }
 
-.nav-wireframe.is-graph-node.is-arch-canvas .wire-canvas {
+.nav-wireframe.is-graph-node.is-arch-canvas {
   flex: 1 1 auto;
-  height: 100%;
-  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-wireframe.is-graph-node.is-arch-canvas .wire-canvas {
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  height: auto;
+  max-height: none;
 }
 
 .nav-wireframe.is-arch-canvas .wire-label,

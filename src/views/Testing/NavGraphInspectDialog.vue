@@ -28,6 +28,10 @@ const form = reactive({
   chromeTexts: [],
   visitCount: 0,
   inferredRole: '',
+  layoutClass: '',
+  layoutExtent: null,
+  morphCount: 0,
+  evidenceTier: '',
   mergeIntoIds: [],
 })
 
@@ -80,6 +84,10 @@ function loadForm(st) {
   form.headerTitle = String(meta.header_title || form.chromeTexts[0] || '').trim()
   form.visitCount = Number(meta.visit_count || 0)
   form.inferredRole = String(meta.inferred_role || meta.page_role || '').trim()
+  form.layoutClass = String(meta.layout_class || '').trim()
+  form.layoutExtent = meta.layout_extent && typeof meta.layout_extent === 'object' ? meta.layout_extent : null
+  form.morphCount = Number(meta.morph_count || 0)
+  form.evidenceTier = String(meta.evidence_tier || '').trim()
   form.mergeIntoIds = []
   advancedJson.value = JSON.stringify(raw, null, 2)
 }
@@ -183,6 +191,8 @@ const onMerge = () => {
         :turn-refs="atlasTurnRefs"
         :fallback-wireframe="wireframe"
         :title="title"
+        :layout-class="form.layoutClass"
+        :layout-extent="form.layoutExtent"
         @split-capture="(p) => emit('split-capture', p)"
         @pin-capture="(p) => emit('pin-capture', p)"
       />
@@ -205,6 +215,9 @@ const onMerge = () => {
       <div class="read-only-stats">
         <span>采集次数：{{ form.visitCount }}</span>
         <span v-if="form.inferredRole">推断角色：{{ form.inferredRole }}</span>
+        <span v-if="form.layoutClass">布局：{{ form.layoutClass }}</span>
+        <span v-if="form.evidenceTier">证据：{{ form.evidenceTier }}</span>
+        <span v-if="form.morphCount > 0">多态：{{ form.morphCount }}</span>
       </div>
 
       <el-form label-position="top" class="stack-form" @submit.prevent>

@@ -123,3 +123,17 @@ export const postAtlasSplitCapture = (appId, data) =>
     method: 'post',
     data,
   })
+
+export const postAtlasMorphVlm = (appId, data) =>
+  request({
+    url: `/nav-fsm/${appId}/atlas-morph-vlm`,
+    method: 'post',
+    data,
+  })
+
+export const postAliasGovernanceApply = (appId, doc) =>
+  request({
+    url: `/nav-fsm/${appId}/alias-governance/apply`,
+    method: 'post',
+    data: { doc },
+  })

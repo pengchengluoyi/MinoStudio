@@ -10,6 +10,7 @@ import {
   postAtlasMergeStates,
   postAtlasPinCapture,
   postAtlasSplitCapture,
+  postAliasGovernanceApply,
 } from '@/api/navFsm'
 import { listIntelLinks } from '@/api/appIntel'
 import { buildIntelOverlay } from '@/utils/appIntelOverlay'
@@ -479,6 +480,28 @@ const onSplitCapture = async ({ sessionId, turnId }) => {
   }
 }
 
+const applyingAliases = ref(false)
+
+const onApplyAliasGovernance = async () => {
+  if (!props.appId) return
+  applyingAliases.value = true
+  try {
+    const res = await postAliasGovernanceApply(props.appId, graphDoc.value || {})
+    const n = Number(res?.data?.changed || 0)
+    if (n > 0 && res?.data?.doc) {
+      graphDoc.value = res.data.doc
+      ElMessage.success(`已治理 ${n} 个页面的展示名/别名`)
+    } else {
+      ElMessage.info('无匹配规则或未改动')
+    }
+    await loadScreenAtlas(true)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '治理失败')
+  } finally {
+    applyingAliases.value = false
+  }
+}
+
 const onPinCapture = async ({ sessionId, turnId, stateId }) => {
   if (!props.appId || !sessionId || !turnId || !stateId) return
   try {
@@ -619,6 +642,9 @@ onUnmounted(() => {
             </el-button>
             <el-button size="small" type="danger" plain :loading="clearingCaptures" @click="onClearCaptures">
               清空采集
+            </el-button>
+            <el-button size="small" :loading="applyingAliases" @click="onApplyAliasGovernance">
+              别名治理
             </el-button>
             <el-button size="small" :loading="liveLoading" @click="loadScreenAtlas()">刷新</el-button>
           </div>

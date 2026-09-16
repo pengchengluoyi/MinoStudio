@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getNavCaptureTurn } from '@/api/navFsm'
+import { getNavCaptureTurn, postAtlasMorphVlm } from '@/api/navFsm'
 import NavFsmWireframe from '@/views/Testing/NavFsmWireframe.vue'
 
 const props = defineProps({
@@ -11,6 +11,8 @@ const props = defineProps({
   fallbackWireframe: { type: Object, default: null },
   title: { type: String, default: '' },
   showCaptureActions: { type: Boolean, default: true },
+  layoutClass: { type: String, default: '' },
+  layoutExtent: { type: Object, default: null },
 })
 
 const emit = defineEmits(['split-capture', 'pin-capture'])
@@ -22,6 +24,7 @@ const activeIndex = ref(0)
 const loadingTurn = ref(false)
 const activeWireframe = ref(null)
 const loadError = ref('')
+const morphLoading = ref(false)
 const listPanelRef = ref(null)
 let wheelLock = false
 
@@ -123,6 +126,49 @@ function onPinCapture() {
     turnId: Number(ref.turn_id || 0),
     stateId: String(props.stateId || ''),
   })
+}
+
+function peerTurnIdFor(ref) {
+  const tid = Number(ref?.turn_id || 0)
+  const prior = stateTurns.value
+    .map((r) => Number(r.turn_id || 0))
+    .filter((t) => t > 0 && t < tid)
+  return prior.length ? prior[prior.length - 1] : 0
+}
+
+async function onMorphVlm(apply = false) {
+  const ref = activeTurnRef()
+  if (!ref || !props.appId) return
+  const peer = peerTurnIdFor(ref)
+  if (!peer) {
+    ElMessage.warning('需要至少两条采集才能判定多态')
+    return
+  }
+  morphLoading.value = true
+  try {
+    const res = await postAtlasMorphVlm(props.appId, {
+      session_id: String(ref.session_id || ''),
+      turn_id: Number(ref.turn_id || 0),
+      peer_turn_id: peer,
+      state_id: String(props.stateId || ''),
+      apply,
+    })
+    const row = res?.data || {}
+    if (!row.ok) {
+      ElMessage.error(row.reason || 'VLM 判定失败')
+      return
+    }
+    const msg = `${row.verdict}（${Math.round((row.confidence || 0) * 100)}%）${row.reason ? `：${row.reason}` : ''}`
+    if (apply) {
+      ElMessage.success(`已应用：${msg}`)
+    } else {
+      ElMessage.info(msg)
+    }
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '请求失败')
+  } finally {
+    morphLoading.value = false
+  }
 }
 
 async function loadTurnAt(globalIdx) {
@@ -251,6 +297,25 @@ onUnmounted(() => {
       <div v-if="showCaptureActions && total" class="capture-actions">
         <el-button size="small" type="warning" plain @click="onSplitCapture">拆成独立页</el-button>
         <el-button size="small" plain @click="onPinCapture">钉到本页</el-button>
+        <el-button
+          size="small"
+          type="primary"
+          plain
+          :loading="morphLoading"
+          :disabled="globalActiveIndex < 1"
+          @click="onMorphVlm(false)"
+        >
+          VLM 多态判定
+        </el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="morphLoading"
+          :disabled="globalActiveIndex < 1"
+          @click="onMorphVlm(true)"
+        >
+          判定并应用
+        </el-button>
       </div>
     </aside>
 
@@ -262,6 +327,8 @@ onUnmounted(() => {
         :turn-label="title"
         :app-id="appId"
         :state-id="stateId"
+        :layout-class="layoutClass"
+        :layout-extent="layoutExtent"
         :connect-hotspots="false"
         preview
       />
