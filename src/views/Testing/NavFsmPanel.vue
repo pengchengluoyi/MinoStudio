@@ -10,7 +10,6 @@ import {
   postAtlasMergeStates,
   postAtlasPinCapture,
   postAtlasSplitCapture,
-  postAliasGovernanceApply,
 } from '@/api/navFsm'
 import { listIntelLinks } from '@/api/appIntel'
 import { buildIntelOverlay } from '@/utils/appIntelOverlay'
@@ -46,7 +45,8 @@ const bootstrapping = ref(false)
 const liveLoading = ref(false)
 const liveGraphMeta = ref(null)
 const trajectory = ref(null)
-const archViewTab = ref('nav')
+const navViewId = ref('')
+const atlasAppVersion = ref('')
 const setupReady = ref(false)
 const captureReport = ref(null)
 const metrics = ref(null)
@@ -195,6 +195,8 @@ const loadScreenAtlas = async (quiet = false) => {
   try {
     const res = await getNavScreenAtlas(props.appId, {
       project_id: props.projectId || undefined,
+      nav_view_id: navViewId.value || undefined,
+      app_version: atlasAppVersion.value || undefined,
     })
     const payload = res?.data || null
     await applyAtlas(payload, { forceRemount: !quiet })
@@ -343,6 +345,22 @@ const onClearCaptures = async () => {
 const captureTurns = computed(() => captureReport.value?.turns_captured ?? 0)
 const captureSessionsCount = computed(() => captureReport.value?.sessions ?? 0)
 
+const navViewOptions = computed(() => {
+  const views = graphDoc.value?.meta?.nav_views
+  if (!Array.isArray(views) || !views.length) {
+    return [{ value: '', label: '默认视图' }]
+  }
+  return views.map((v) => ({
+    value: String(v.nav_view_id || ''),
+    label: String(v.label || v.nav_view_id || '视图'),
+  }))
+})
+
+const flowBlockCount = computed(() => {
+  const blocks = graphDoc.value?.meta?.flow_blocks
+  return Array.isArray(blocks) ? blocks.length : 0
+})
+
 const emptyGraphDoc = () => ({
   app_id: props.appId,
   project_id: props.projectId,
@@ -477,28 +495,6 @@ const onSplitCapture = async ({ sessionId, turnId }) => {
   } catch (e) {
     if (e === 'cancel' || e?.message === 'cancel') return
     ElMessage.error(e?.response?.data?.detail || e?.message || '拆分失败')
-  }
-}
-
-const applyingAliases = ref(false)
-
-const onApplyAliasGovernance = async () => {
-  if (!props.appId) return
-  applyingAliases.value = true
-  try {
-    const res = await postAliasGovernanceApply(props.appId, graphDoc.value || {})
-    const n = Number(res?.data?.changed || 0)
-    if (n > 0 && res?.data?.doc) {
-      graphDoc.value = res.data.doc
-      ElMessage.success(`已治理 ${n} 个页面的展示名/别名`)
-    } else {
-      ElMessage.info('无匹配规则或未改动')
-    }
-    await loadScreenAtlas(true)
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '治理失败')
-  } finally {
-    applyingAliases.value = false
   }
 }
 
@@ -643,15 +639,80 @@ onUnmounted(() => {
             <el-button size="small" type="danger" plain :loading="clearingCaptures" @click="onClearCaptures">
               清空采集
             </el-button>
-            <el-button size="small" :loading="applyingAliases" @click="onApplyAliasGovernance">
-              别名治理
-            </el-button>
+            <el-select
+              v-model="navViewId"
+              size="small"
+              class="nav-view-select"
+              placeholder="应用版本视图"
+              clearable
+              @change="loadScreenAtlas(true)"
+            >
+              <el-option
+                v-for="opt in navViewOptions"
+                :key="opt.value || 'default'"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
+            <el-input
+              v-model="atlasAppVersion"
+              size="small"
+              class="nav-version-input"
+              placeholder="App 版本号"
+              clearable
+              @change="loadScreenAtlas(true)"
+            />
             <el-button size="small" :loading="liveLoading" @click="loadScreenAtlas()">刷新</el-button>
           </div>
         </div>
         <div class="graph-view-tabs">
-          <button type="button" class="gv-tab" :class="{ active: archViewTab === 'structure' }" @click="archViewTab = 'structure'">结构图</button>
-          <button type="button" class="gv-tab" :class="{ active: archViewTab === 'nav' }" @click="archViewTab = 'nav'">跳转图</button>
+          <div class="arch-line-legend muted" aria-label="架构图连线图例">
+            <span class="all-title">连线</span>
+            <span class="leg-item">
+              <svg class="leg-line" width="28" height="10" aria-hidden="true">
+                <line x1="0" y1="5" x2="24" y2="5" stroke="#1d4ed8" stroke-width="2.5" />
+                <polygon points="24,5 18,2 18,8" fill="#1d4ed8" />
+              </svg>
+              蓝·实线 · 前进 · 用户操作
+            </span>
+            <span class="leg-item">
+              <svg class="leg-line" width="28" height="10" aria-hidden="true">
+                <line
+                  x1="0"
+                  y1="5"
+                  x2="22"
+                  y2="5"
+                  stroke="#1d4ed8"
+                  stroke-width="2"
+                  stroke-dasharray="4 3"
+                />
+                <polygon points="24,5 18,2 18,8" fill="#1d4ed8" />
+              </svg>
+              蓝·虚线 · 前进 · 自动变化
+            </span>
+            <span class="leg-item">
+              <svg class="leg-line" width="28" height="10" aria-hidden="true">
+                <line
+                  x1="0"
+                  y1="5"
+                  x2="22"
+                  y2="5"
+                  stroke="#c2410c"
+                  stroke-width="2"
+                  stroke-dasharray="4 3"
+                />
+                <polygon points="24,5 18,2 18,8" fill="#c2410c" />
+              </svg>
+              橙·虚线 · 返回
+            </span>
+            <span class="leg-note">操作边从控件出；自动/返回从页底出 →</span>
+          </div>
+          <span v-if="flowBlockCount" class="intel-legend muted">
+            业务流 {{ graphDoc?.meta?.flow_block_display_count ?? flowBlockCount }} 组展示
+            <template v-if="flowBlockCount > (graphDoc?.meta?.flow_block_display_count ?? flowBlockCount)">
+              / 共 {{ flowBlockCount }} 组
+            </template>
+          </span>
           <span class="intel-legend muted">
             <span class="il wiki">知</span> wiki 挂接
             <span class="il doc">文</span> 文档溯源
@@ -664,12 +725,11 @@ onUnmounted(() => {
           </p>
           <NavRelationGraph
             v-else-if="graphDoc"
-            :key="`live-${graphReloadKey}-${archViewTab}`"
+            :key="`live-${graphReloadKey}`"
             :doc="graphDoc"
             :app-id="appId"
             :app-name="appName"
             :project-id="projectId"
-            :arch-view="archViewTab"
             :intel-overlay="intelOverlay"
             variant="arch"
             class="published-graph"
@@ -791,6 +851,37 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
+.arch-line-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  font-size: 11px;
+  line-height: 1.3;
+  max-width: 100%;
+}
+
+.arch-line-legend .all-title {
+  font-weight: 600;
+  color: #475569;
+}
+
+.arch-line-legend .leg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.arch-line-legend .leg-line {
+  flex-shrink: 0;
+}
+
+.arch-line-legend .leg-note {
+  color: #64748b;
+  font-size: 10px;
+}
+
 .intel-legend {
   margin-left: auto;
   font-size: 11px;
@@ -891,6 +982,15 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+.nav-view-select {
+  width: 148px;
+}
+
+.nav-version-input {
+  width: 128px;
 }
 
 .compact-warn {

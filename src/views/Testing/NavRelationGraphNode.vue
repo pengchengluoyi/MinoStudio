@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import NavFsmWireframe from '@/views/Testing/NavFsmWireframe.vue'
 import { archGraphContext, archGraphHover, archGraphLeave } from '@/utils/navGraphArchBridge'
 import { LAYOUT_CLASS_LABELS } from '@/utils/navRelationGraph'
@@ -10,6 +11,7 @@ const props = defineProps({
 
 const nodeData = computed(() => props.node?.data || {})
 const isRoot = computed(() => props.node?.id === '__nav_app_root__')
+const isBlockShell = computed(() => Boolean(nodeData.value.blockShell))
 const isArch = computed(() => Boolean(nodeData.value.archInteract))
 
 const onEnter = (e) => {
@@ -26,11 +28,29 @@ const onContextMenu = (e) => {
   e.preventDefault()
   archGraphContext(props.node, e)
 }
+
+const onDblClick = async () => {
+  if (!isArch.value || isRoot.value || isBlockShell.value) return
+  const id = String(nodeData.value.stateId || props.node?.id || '').trim()
+  if (!id) return
+  try {
+    await navigator.clipboard.writeText(id)
+    ElMessage.success(`已复制 ${id}`)
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
 </script>
 
 <template>
   <div
-    v-if="isRoot"
+    v-if="isBlockShell"
+    class="rg-flow-block-shell"
+  >
+    <span class="shell-title">{{ node?.text || '业务流' }}</span>
+  </div>
+  <div
+    v-else-if="isRoot"
     class="rg-nav-node root"
     @pointerenter.capture="onEnter"
     @pointerleave.capture="onLeave"
@@ -45,15 +65,20 @@ const onContextMenu = (e) => {
       dialog: nodeData.kind === 'dialog',
       'has-wf': nodeData.showWireframe,
       'is-arch-wf': isArch && nodeData.showWireframe,
+      'flow-block': Boolean(nodeData.flowBlockId),
       'tab-icon': nodeData.tabSlotKind === 'icon',
       'tab-mixed': nodeData.tabSlotKind === 'mixed',
     }"
     @pointerenter.capture="onEnter"
     @pointerleave.capture="onLeave"
     @contextmenu.capture="onContextMenu"
+    @dblclick.capture="onDblClick"
   >
     <strong v-if="nodeData.showWireframe" class="node-head">{{ node?.text || nodeData.stateId }}</strong>
     <p v-if="nodeData.showWireframe && nodeData.subhead" class="node-sub muted">{{ nodeData.subhead }}</p>
+    <p v-if="nodeData.showWireframe && nodeData.flowBlockName" class="node-flow muted">
+      流 · {{ nodeData.flowBlockName }}
+    </p>
     <div
       v-if="nodeData.showWireframe && (nodeData.layoutClass || nodeData.morphCount)"
       class="layout-badges"
@@ -73,6 +98,7 @@ const onContextMenu = (e) => {
       :layout-extent="nodeData.layoutExtent || null"
       :connect-hotspots="Boolean(nodeData.connectHotspots)"
       :editable-hotspots="Boolean(nodeData.editableHotspots)"
+      :nav-outgoing="nodeData.navOutgoing || []"
       graph-node
       :arch-canvas="isArch"
     />
@@ -102,6 +128,28 @@ const onContextMenu = (e) => {
 </template>
 
 <style scoped>
+.rg-flow-block-shell {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  border: 2px dashed rgba(99, 102, 241, 0.45);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(238, 242, 255, 0.92) 0%, rgba(248, 250, 252, 0.55) 100%);
+  pointer-events: none;
+  position: relative;
+}
+
+.shell-title {
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #4338ca;
+  letter-spacing: 0.02em;
+}
+
 .rg-nav-node {
   box-sizing: border-box;
   width: 100%;
@@ -190,6 +238,19 @@ const onContextMenu = (e) => {
 .lb.tier {
   background: #ede9fe;
   color: #5b21b6;
+}
+
+.rg-nav-node.flow-block {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15);
+}
+
+.node-flow {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.25;
+  color: #4f46e5;
+  flex-shrink: 0;
 }
 
 .rg-nav-node.entry {

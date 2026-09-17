@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { RGConnectTarget } from '@relation-graph/vue'
 import request from '@/utils/request'
-import { hotspotTargetId, RG_TARGET_HTML } from '@/utils/navRelationGraph'
+import { hotspotTargetId, RG_TARGET_CONNECT } from '@/utils/navRelationGraph'
 
 const props = defineProps({
   wireframe: { type: Object, default: null },
@@ -13,13 +13,40 @@ const props = defineProps({
   stateId: { type: String, default: '' },
   connectHotspots: { type: Boolean, default: false },
   editableHotspots: { type: Boolean, default: false },
-  /** 弹窗大图预览 */
   preview: { type: Boolean, default: false },
-  /** 架构图画布：与预览同字号，不裁切底栏 */
   archCanvas: { type: Boolean, default: false },
+  navOutgoing: { type: Array, default: () => [] },
   layoutClass: { type: String, default: '' },
   layoutExtent: { type: Object, default: null },
 })
+
+function regionEligibleForNavAnchor(r) {
+  const rect = r?.rect || {}
+  const w = Number(rect.w || 0)
+  const h = Number(rect.h || 0)
+  if (w * h > 0.22) return false
+  if (w > 0.88 && h > 0.35) return false
+  if (h > 0.55 && w > 0.45) return false
+  return true
+}
+
+const navOutSet = computed(
+  () => new Set((props.navOutgoing || []).map((id) => String(id || '').trim()).filter(Boolean)),
+)
+
+function regionHasNavLine(r) {
+  const dst = String(r?.nav_to || '').trim()
+  if (!dst) return false
+  if (!navOutSet.value.size) return Boolean(r.nav_to)
+  return navOutSet.value.has(dst)
+}
+
+function showConnectTarget(r) {
+  if (!props.connectHotspots) return false
+  if (!regionHasNavLine(r)) return false
+  if (String(r?.source || '') === 'nav_hint') return true
+  return regionEligibleForNavAnchor(r)
+}
 
 const targetIdFor = (r) => hotspotTargetId(props.stateId, r)
 
@@ -96,11 +123,9 @@ const styleRect = (rect) => {
   }
 }
 
-const isFeedRegion = (r) => {
-  const role = String(r?.role || '').toLowerCase()
-  const label = String(r?.label || '').toLowerCase()
-  return role.includes('feed') || role.includes('list') || label.includes('feed')
-}
+const isFeedRegion = (r) => String(r?.morph_axis || '') === 'vertical'
+
+const isHorizontalMorphRegion = (r) => String(r?.morph_axis || '') === 'horizontal'
 
 const regionStyle = (r) => {
   const base = styleRect(r.rect)
@@ -140,8 +165,8 @@ function showWireLabel(r) {
     <div
       class="wire-canvas"
       :class="{
-        'is-infinite-feed': layoutClass === 'infinite_feed',
-        'is-horizontal-pager': layoutClass === 'horizontal_pager',
+        'is-infinite-feed': layoutClass === 'infinite_feed' && !archCanvas,
+        'is-horizontal-pager': layoutClass === 'horizontal_pager' && !archCanvas,
         'is-fixed-viewport': layoutClass === 'fixed_viewport',
       }"
       role="img"
@@ -150,10 +175,11 @@ function showWireLabel(r) {
     >
       <template v-for="r in regions" :key="`${r.source}-${r.id}`">
         <RGConnectTarget
-          v-if="connectHotspots && (r.nav_to || r.clickable)"
+          v-if="showConnectTarget(r)"
           :target-id="targetIdFor(r)"
-          :target-type="RG_TARGET_HTML"
-          dom-mode="contents"
+          :target-type="RG_TARGET_CONNECT"
+          junction-point="bottom"
+          dom-mode="wrap"
           :disable-drag="!editableHotspots"
           :line-template="{ color: '#2563eb', lineWidth: 2 }"
           class="wire-region-anchor"
@@ -166,9 +192,10 @@ function showWireLabel(r) {
               'is-hierarchy': r.source === 'hierarchy',
               'is-image': r.is_image,
               'has-snip': screenBlobUrl && r.is_image,
-              'is-nav': Boolean(r.nav_to),
-              'is-hotspot': true,
-              'is-feed-slot': layoutClass === 'infinite_feed' && isFeedRegion(r),
+              'is-nav': regionHasNavLine(r),
+              'is-hotspot': showConnectTarget(r),
+              'is-feed-slot': isFeedRegion(r),
+              'is-h-morph-slot': isHorizontalMorphRegion(r),
             }"
             :title="r.nav_to ? `${r.nav_label || r.label} → ${r.nav_to}` : r.label"
           >
@@ -184,8 +211,9 @@ function showWireLabel(r) {
             'is-hierarchy': r.source === 'hierarchy',
             'is-image': r.is_image,
             'has-snip': screenBlobUrl && r.is_image,
-            'is-nav': Boolean(r.nav_to),
-            'is-feed-slot': layoutClass === 'infinite_feed' && isFeedRegion(r),
+            'is-nav': regionHasNavLine(r),
+            'is-feed-slot': isFeedRegion(r),
+            'is-h-morph-slot': isHorizontalMorphRegion(r),
           }"
           :style="regionStyle(r)"
           :title="r.nav_to ? `${r.label} → ${r.nav_to}` : r.label"
@@ -244,7 +272,13 @@ function showWireLabel(r) {
 
 .wire-region.is-feed-slot {
   border-style: dashed !important;
+  border-color: #64748b !important;
   opacity: 0.92;
+}
+
+.wire-region.is-h-morph-slot {
+  border-style: dotted !important;
+  border-color: #b45309 !important;
 }
 
 .nav-wireframe.is-arch-canvas .wire-canvas,
@@ -270,6 +304,20 @@ function showWireLabel(r) {
   aspect-ratio: 9 / 16;
   height: auto;
   max-height: none;
+}
+
+.nav-wireframe.is-arch-canvas .wire-region.is-hotspot.is-nav::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+  pointer-events: none;
 }
 
 .nav-wireframe.is-arch-canvas .wire-label,

@@ -2,12 +2,37 @@
 
 const NAV_ROOT_ID = '__nav_app_root__'
 const HS_SEP = '::'
+/** @deprecated RG 3.x 请用 RG_TARGET_CONNECT */
 export const RG_TARGET_HTML = 'HTMLElementId'
+/** RGConnectTarget + fakeLines 锚点类型（relation-graph ≥3.1） */
+export const RG_TARGET_CONNECT = 'NodePoint'
 export const RG_TARGET_NODE = 'node'
 /** relation-graph RGLineShape.StandardCurve */
 export const RG_LINE_SHAPE_CURVE = 6
 /** 正交折线：拐点在卡片外侧走线 */
 export const RG_LINE_SHAPE_ORTH = 44
+
+/** relation-graph 内置默认箭头（勿把 defaultLineMarker 设成字符串 'arrow'，会弄坏 SVG marker） */
+export const RG_DEFAULT_LINE_MARKER = {
+  viewBox: '0 0 12 12',
+  markerWidth: 20,
+  markerHeight: 20,
+  refX: 3,
+  refY: 3,
+  data: 'M 0 0, V 6, L 4 3, Z',
+}
+
+/** 为 RG 线补全终点箭头 marker（fakeLine / 虚线需显式 endMarkerId）。 */
+export function enrichArchLineArrows(lines, instanceId) {
+  const iid = String(instanceId || '').trim()
+  const endMarkerId = iid ? `${iid}-arrow-default` : ''
+  return (lines || []).map((line) => ({
+    ...line,
+    showEndArrow: line.showEndArrow !== false,
+    showStartArrow: false,
+    ...(endMarkerId ? { endMarkerId } : {}),
+  }))
+}
 
 export function stateId(state) {
   return String(state?.id || state?.state_id || '').trim()
@@ -91,8 +116,14 @@ export function layoutExtentLabel(extent) {
 export function archNodeSubhead(st, intel = {}) {
   const meta = st?.meta || {}
   const bits = []
+  const fb = String(intel.flowBlockName || meta.flow_block_name || '').trim()
+  if (fb) bits.push(`业务流 · ${fb}`)
   const lc = String(meta.layout_class || '').trim()
-  if (LAYOUT_CLASS_LABELS[lc]) bits.push(LAYOUT_CLASS_LABELS[lc])
+  const vMorph = Number(meta.region_morph_vertical || 0)
+  const hMorph = Number(meta.region_morph_horizontal || 0)
+  if (vMorph > 0) bits.push(`竖滑区 ×${vMorph}`)
+  if (hMorph > 0) bits.push(`横滑区 ×${hMorph}`)
+  if (!vMorph && !hMorph && LAYOUT_CLASS_LABELS[lc]) bits.push(LAYOUT_CLASS_LABELS[lc])
   const tier = String(meta.evidence_tier || '').trim()
   if (tier) bits.push(`证据 ${tier}`)
   const morph = Number(meta.morph_count || 0)
@@ -113,18 +144,31 @@ export function archNodeSubhead(st, intel = {}) {
 
 export function stateDisplayLabel(st) {
   const meta = st?.meta || {}
-  const title = String(meta.display_name || meta.page_title || '').trim()
-  if (title) return compactPageTitle(title)
+  const sid = stateId(st)
+  let title = String(meta.display_name || meta.page_title || '').trim()
+  const looksLikeId = (t) => !t || t === sid || /^page\.sk/i.test(t)
+  if (looksLikeId(title)) {
+    const samples = Array.isArray(meta.name_samples) ? meta.name_samples : []
+    const aliases = Array.isArray(meta.aliases) ? meta.aliases : []
+    const pick =
+      samples.find((a) => a && !looksLikeId(String(a).trim())) ||
+      aliases.find((a) => a && !looksLikeId(String(a).trim()))
+    if (pick) title = String(pick).trim()
+    else if (meta.header_title && !looksLikeId(String(meta.header_title).trim())) {
+      title = String(meta.header_title).trim()
+    }
+  }
+  if (title && !looksLikeId(title)) return compactPageTitle(title)
   const tab = String(meta.tab || '').trim()
   const role = String(meta.page_role || '').trim()
   if (tab && role) return `${tab} · ${role.replace(/_/g, ' ')}`
   if (tab) return tab
   if (st?.entry) {
     const blocks = Array.isArray(st?.identify?.required) ? st.identify.required : []
-    const tab = String(blocks.find((b) => b?.signal === 'tab_bar')?.match?.selected || '').trim()
-    if (tab) return `入口 · ${tab}`
+    const tabSel = String(blocks.find((b) => b?.signal === 'tab_bar')?.match?.selected || '').trim()
+    if (tabSel) return `入口 · ${tabSel}`
   }
-  return stateId(st)
+  return sid
 }
 
 function wireframeForState(doc, sid) {
@@ -132,11 +176,75 @@ function wireframeForState(doc, sid) {
   return wf[sid] || { regions: [], chrome: {}, screen: { w: 1080, h: 1920 }, source: 'empty' }
 }
 
+function regionArea(region) {
+  const rect = region?.rect || {}
+  return Number(rect.w || 0) * Number(rect.h || 0)
+}
+
+/** 整屏 content 块不适合做连线锚点（线会看起来从页面中心出）。 */
+function regionEligibleForNavAnchor(r) {
+  const rect = r?.rect || {}
+  const w = Number(rect.w || 0)
+  const h = Number(rect.h || 0)
+  if (w * h > 0.22) return false
+  if (w > 0.88 && h > 0.35) return false
+  if (h > 0.55 && w > 0.45) return false
+  return true
+}
+
+function sanitizeWireframeNavRegions(wf) {
+  const regions = (wf?.regions || []).map((r) => {
+    const copy = { ...r }
+    if (copy.nav_to && !regionEligibleForNavAnchor(copy)) {
+      delete copy.nav_to
+      if (!copy.clickable) copy.clickable = false
+    }
+    return copy
+  })
+  return { ...wf, regions }
+}
+
+function pruneWireframeNavTo(wf, stateSid, edges) {
+  const outgoing = new Set(
+    (edges || [])
+      .filter((e) => edgeKind(e) === 'nav' && edgeFrom(e) === stateSid)
+      .map((e) => edgeTo(e))
+      .filter(Boolean),
+  )
+  const regions = (wf?.regions || []).map((r) => {
+    const copy = { ...r }
+    const dst = String(copy.nav_to || '')
+    if (dst && !outgoing.has(dst)) {
+      delete copy.nav_to
+      if (String(copy.source || '') !== 'nav_hint') {
+        copy.clickable = Boolean(copy.clickable && false)
+      }
+    }
+    return copy
+  })
+  return { ...wf, regions }
+}
+
+function wireframeForStatePrepared(doc, sid, allEdges) {
+  const raw = wireframeForState(doc, sid)
+  const hinted = applyNavHintsToWireframe(sanitizeWireframeNavRegions(raw), sid, allEdges)
+  return pruneWireframeNavTo(hinted, sid, allEdges)
+}
+
+function regionBottomScore(region) {
+  const rect = region?.rect || {}
+  const y = Number(rect.y || 0)
+  const h = Number(rect.h || 0)
+  return y + h
+}
+
 function applyNavHintsToWireframe(wf, stateSid, edges) {
-  const out = { ...wf, regions: [...(wf.regions || [])] }
-  for (const ed of edges || []) {
-    if (edgeKind(ed) !== 'nav') continue
-    if (edgeFrom(ed) !== stateSid) continue
+  const out = { ...wf, regions: (wf.regions || []).map((r) => ({ ...r })) }
+  const outgoing = (edges || []).filter(
+    (ed) => edgeKind(ed) === 'nav' && edgeFrom(ed) === stateSid,
+  )
+  const usedKeys = new Set()
+  for (const ed of outgoing) {
     const meta = ed.meta || {}
     const hs = String(meta.from_hotspot_id || '')
     const dst = edgeTo(ed)
@@ -145,17 +253,195 @@ function applyNavHintsToWireframe(wf, stateSid, edges) {
     if (hs.includes(HS_SEP)) {
       regionKey = hs.split(HS_SEP).slice(1).join(HS_SEP)
     }
-    for (const r of out.regions) {
-      const rk = regionHotspotKey(r)
-      if (regionKey && rk !== regionKey) continue
-      if (regionKey || r.clickable) {
+    let matched = false
+    if (regionKey) {
+      for (const r of out.regions) {
+        const rk = regionHotspotKey(r)
+        if (rk !== regionKey) continue
         r.nav_to = dst
+        r.clickable = true
         r.nav_label = String(meta.action_label || r.nav_label || r.label || '进入')
+        usedKeys.add(rk)
+        matched = true
         break
       }
     }
+    if (matched) continue
+    const pool = out.regions
+      .filter((r) => {
+        const rk = regionHotspotKey(r)
+        if (!rk || usedKeys.has(rk)) return false
+        if (r.nav_to && r.nav_to !== dst) return false
+        if (!regionEligibleForNavAnchor(r)) return false
+        return r.clickable || regionBottomScore(r) >= 0.62
+      })
+      .sort((a, b) => regionBottomScore(b) - regionBottomScore(a))
+    const pick = pool[0]
+    if (pick) {
+      const rk = regionHotspotKey(pick)
+      pick.nav_to = dst
+      pick.clickable = true
+      pick.nav_label = String(meta.action_label || pick.nav_label || pick.label || '进入')
+      if (rk) usedKeys.add(rk)
+      continue
+    }
+    const synId = `to-${String(dst).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-24)}`
+    const row = usedKeys.size
+    out.regions.push({
+      source: 'nav_hint',
+      id: synId,
+      label: String(meta.action_label || '进入'),
+      clickable: true,
+      nav_to: dst,
+      nav_label: String(meta.action_label || '进入'),
+      rect: {
+        x: 0.1 + (row % 3) * 0.04,
+        y: Math.min(0.82, 0.68 + row * 0.06),
+        w: 0.8,
+        h: 0.065,
+      },
+    })
+    usedKeys.add(`nav_hint-${synId}`)
   }
   return out
+}
+
+function buildFlowBlockShellNodes(doc, layoutPos, wfW, wfH, { enabled = true } = {}) {
+  if (!enabled) return []
+  const stateIds = new Set(
+    (Array.isArray(doc?.states) ? doc.states : []).map((s) => stateId(s)).filter(Boolean),
+  )
+  const blocks = Array.isArray(doc?.meta?.flow_blocks) ? doc.meta.flow_blocks : []
+  const nameById = new Map(
+    blocks.map((b) => [String(b?.flow_block_id || '').trim(), String(b?.display_name || '').trim()]),
+  )
+  const byBlock = new Map()
+  for (const [sid, pos] of Object.entries(layoutPos || {})) {
+    const bid = String(pos?.flow_block_id || '').trim()
+    if (!bid || !Number.isFinite(Number(pos?.x)) || !Number.isFinite(Number(pos?.y))) continue
+    if (!byBlock.has(bid)) byBlock.set(bid, [])
+    byBlock.get(bid).push({ sid, x: Number(pos.x), y: Number(pos.y) })
+  }
+  const shells = []
+  for (const [bid, members] of byBlock.entries()) {
+    if (members.length < 2) continue
+    if (!members.every((m) => stateIds.has(m.sid))) continue
+    const spanX = Math.max(...members.map((m) => m.x)) - Math.min(...members.map((m) => m.x))
+    if (spanX > wfW * 4) continue
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const m of members) {
+      minX = Math.min(minX, m.x)
+      minY = Math.min(minY, m.y)
+      maxX = Math.max(maxX, m.x + wfW)
+      maxY = Math.max(maxY, m.y + wfH)
+    }
+    shells.push({
+      id: `__block__${bid}`,
+      text: nameById.get(bid) || bid,
+      width: Math.max(180, maxX - minX + 40),
+      height: Math.max(80, maxY - minY + 52),
+      x: minX - 20,
+      y: minY - 44,
+      fixed: true,
+      data: {
+        kind: 'flow_block_shell',
+        showWireframe: false,
+        blockShell: true,
+        flowBlockId: bid,
+      },
+    })
+  }
+  return shells
+}
+
+function isConnectFromType(fromType) {
+  const t = String(fromType || '')
+  return t === RG_TARGET_CONNECT || t === RG_TARGET_HTML
+}
+
+function resolveNavLineFrom(stateSid, toState, wf, meta) {
+  const hs = String(meta.from_hotspot_id || '').trim()
+  if (hs.includes(HS_SEP)) {
+    return { from: hs, fromType: RG_TARGET_CONNECT }
+  }
+  for (const r of wf?.regions || []) {
+    if (String(r.nav_to || '') !== toState) continue
+    const rk = regionHotspotKey(r)
+    if (!rk) continue
+    return { from: hotspotTargetId(stateSid, rk), fromType: RG_TARGET_CONNECT }
+  }
+  return { from: stateSid, fromType: RG_TARGET_NODE }
+}
+
+/** 架构图 nav：禁止降级为节点边框，必要时补合成锚区。 */
+function ensureArchNavLineFrom(stateSid, toState, wf, meta) {
+  let working = wf
+  let lineFrom = resolveNavLineFrom(stateSid, toState, working, meta)
+  if (isConnectFromType(lineFrom.fromType)) {
+    return { lineFrom, wireframe: working }
+  }
+  working = applyNavHintsToWireframe(working, stateSid, [
+    { kind: 'nav', from: stateSid, to: toState, meta: meta || {} },
+  ])
+  lineFrom = resolveNavLineFrom(stateSid, toState, working, meta)
+  if (isConnectFromType(lineFrom.fromType)) {
+    return { lineFrom, wireframe: working }
+  }
+  const synId = `to-${String(toState).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-24)}`
+  const regions = [...(working.regions || [])]
+  if (!regions.some((r) => String(r.nav_to || '') === toState && regionEligibleForNavAnchor(r))) {
+    regions.push({
+      source: 'nav_hint',
+      id: synId,
+      label: String(meta?.action_label || '进入'),
+      clickable: true,
+      nav_to: toState,
+      nav_label: String(meta?.action_label || '进入'),
+      rect: { x: 0.12, y: 0.74, w: 0.76, h: 0.065 },
+    })
+  }
+  working = { ...working, regions }
+  lineFrom = resolveNavLineFrom(stateSid, toState, working, meta)
+  return { lineFrom, wireframe: working }
+}
+
+/** 与 Nexus `infer_transition_driver` 对齐（边 meta 缺 transition 时的回落）。 */
+export function inferNavDriver(meta = {}) {
+  const tr = meta.transition
+  if (tr && tr.driver) return String(tr.driver).trim().toLowerCase()
+  if (meta.reverse) return 'system'
+  const at = String(meta.action_type || '').trim().toLowerCase()
+  if (at === 'back') return 'system'
+  if (at === 'tap' || at === 'tab' || at === 'swipe' || at === 'input') return 'manual'
+  return 'unknown'
+}
+
+/** auto / system：无同 turn 显式点击语义，锚点从页级底边出，不绑具体组件。 */
+export function isPassiveNavDriver(driver) {
+  const d = String(driver || '').trim().toLowerCase()
+  return d === 'auto' || d === 'system'
+}
+
+export function formatArchNavLineText(rawLabel, driver, { jumpOnly = false } = {}) {
+  let label = String(rawLabel || '进入')
+    .replace(/observed×\d+/gi, '进入')
+    .replace(/\s*·\s*system\s*$/i, '')
+    .replace(/\s*system\s*$/i, '')
+    .trim()
+  if (!label) label = '进入'
+  const d = String(driver || '').trim().toLowerCase()
+  if (jumpOnly && d && d !== 'unknown') return `${label} · ${d}`
+  if (d === 'auto') return `${label} · auto`
+  return label
+}
+
+function driverDashType(driver) {
+  const d = String(driver || '').trim().toLowerCase()
+  if (d === 'auto' || d === 'system') return 4
+  return undefined
 }
 
 /**
@@ -190,9 +476,25 @@ function layoutAtlasArchGrid(nodes, { wfW, wfH, colGap = 112, rowGap = 148, maxC
   })
 }
 
+function flowBlockMap(doc) {
+  const blocks = doc?.meta?.flow_blocks
+  if (!Array.isArray(blocks)) return new Map()
+  const m = new Map()
+  for (const b of blocks) {
+    const bid = String(b?.flow_block_id || '').trim()
+    if (!bid) continue
+    const name = String(b?.display_name || bid).trim()
+    for (const sid of b?.state_ids || []) {
+      const id = String(sid || '').trim()
+      if (id) m.set(id, { flow_block_id: bid, display_name: name })
+    }
+  }
+  return m
+}
+
 function lineFromStateId(line) {
   let fromSid = String(line.from || '')
-  if (line.fromType === RG_TARGET_HTML) {
+  if (isConnectFromType(line.fromType)) {
     fromSid = parseHotspotTargetId(fromSid).stateId || fromSid
   }
   return fromSid
@@ -203,7 +505,7 @@ function dedupeArchNavLines(lines) {
   const pairBest = new Map()
   const passthrough = []
   for (const line of lines) {
-    if (line.dashType) {
+    if (line.dashType && !isConnectFromType(line.fromType)) {
       passthrough.push(line)
       continue
     }
@@ -219,6 +521,19 @@ function dedupeArchNavLines(lines) {
       pairBest.set(key, { ...line })
       continue
     }
+    if (
+      isConnectFromType(line.fromType) &&
+      !isConnectFromType(prev.fromType)
+    ) {
+      const t1 = String(line.text || '')
+      const t2 = String(prev.text || '')
+      pairBest.set(key, {
+        ...prev,
+        ...line,
+        text: t1 && t2 && !t1.includes(t2) ? `${t1} / ${t2}` : t1 || t2,
+      })
+      continue
+    }
     const t1 = String(prev.text || '')
     const t2 = String(line.text || '')
     if (t2 && !t1.includes(t2)) {
@@ -228,48 +543,93 @@ function dedupeArchNavLines(lines) {
   return [...passthrough, ...pairBest.values()]
 }
 
+function splitConnectFakeLines(routedLines) {
+  const lines = []
+  const fakeLines = []
+  for (const line of routedLines) {
+    if (isConnectFromType(line.fromType)) {
+      fakeLines.push({
+        ...line,
+        isFakeLine: true,
+        fromType: RG_TARGET_CONNECT,
+        toType: line.toType || RG_TARGET_NODE,
+        showEndArrow: line.showEndArrow !== false,
+        showStartArrow: false,
+      })
+    } else {
+      lines.push({
+        ...line,
+        showEndArrow: line.showEndArrow !== false,
+        showStartArrow: false,
+      })
+    }
+  }
+  return { lines, fakeLines }
+}
+
 /** 架构图：贝塞尔曲线 + 边框锚点 + 平行线/标签错开 */
-function routeArchLines(lines, nodes) {
+function routeArchLines(lines, nodes, { orth = false } = {}) {
   const byId = new Map(nodes.map((n) => [String(n.id || ''), n]))
   const laneByFrom = new Map()
   return lines.map((line) => {
     const out = {
       ...line,
-      lineShape: RG_LINE_SHAPE_CURVE,
-      polyLineStartDistance: 36,
+      lineShape: line.lineShape ?? (orth ? RG_LINE_SHAPE_ORTH : RG_LINE_SHAPE_CURVE),
+      polyLineStartDistance: isConnectFromType(line.fromType) ? 8 : 36,
       polyLineEndDistance: 36,
-      force_elastic: 28,
+      force_elastic: line.force_elastic ?? 28,
+      showEndArrow: line.showEndArrow !== false,
+      showStartArrow: false,
     }
     const fromSid = lineFromStateId(line)
-    const fromN = byId.get(fromSid)
-    const toN = byId.get(String(line.to || ''))
-    if (!fromN || !toN || !Number.isFinite(Number(fromN.x)) || !Number.isFinite(Number(toN.x))) {
+    if (line.data?.passiveAnchor || (line.fromType === RG_TARGET_NODE && line.fromJunctionPoint === 'bottom')) {
+      out.fromJunctionPoint = 'bottom'
+      out.toJunctionPoint = 'top'
+      out.lineShape = RG_LINE_SHAPE_CURVE
+      out.polyLineStartDistance = 24
+      out.polyLineEndDistance = 48
+      out.force_elastic = line.force_elastic ?? 32
       return out
     }
-    const fx = Number(fromN.x)
-    const fy = Number(fromN.y)
-    const fw = Number(fromN.width || 260)
-    const fh = Number(fromN.height || 480)
-    const tx = Number(toN.x)
-    const ty = Number(toN.y)
-    const tw = Number(toN.width || 260)
-    const th = Number(toN.height || 480)
-    const dx = tx + tw / 2 - (fx + fw / 2)
-    const dy = ty + th / 2 - (fy + fh / 2)
-    if (Math.abs(dx) >= Math.abs(dy)) {
-      out.fromJunctionPoint = dx >= 0 ? 'right' : 'left'
-      out.toJunctionPoint = dx >= 0 ? 'left' : 'right'
-    } else {
-      out.fromJunctionPoint = dy >= 0 ? 'bottom' : 'top'
-      out.toJunctionPoint = dy >= 0 ? 'top' : 'bottom'
+    if (isConnectFromType(line.fromType)) {
+      out.lineShape = RG_LINE_SHAPE_CURVE
+      out.polyLineStartDistance = 4
+      out.polyLineEndDistance = 48
+      out.force_elastic = line.force_elastic ?? 40
+      out.toJunctionPoint = 'top'
+      out.toType = RG_TARGET_NODE
+      return out
     }
-    const laneKey = `${fromSid}:${out.fromJunctionPoint}:${line.to}`
-    const lane = laneByFrom.get(laneKey) || 0
-    laneByFrom.set(laneKey, lane + 1)
-    const spread = lane * 18
-    out.junctionOffset = spread
-    out.textOffset_y = -10 - spread
-    out.textOffset_x = spread % 2 === 0 ? 0 : 6
+    {
+      const fromN = byId.get(fromSid)
+      const toN = byId.get(String(line.to || ''))
+      if (fromN && toN && Number.isFinite(Number(fromN.x)) && Number.isFinite(Number(toN.x))) {
+        const fx = Number(fromN.x)
+        const fy = Number(fromN.y)
+        const fw = Number(fromN.width || 260)
+        const fh = Number(fromN.height || 480)
+        const tx = Number(toN.x)
+        const ty = Number(toN.y)
+        const tw = Number(toN.width || 260)
+        const th = Number(toN.height || 480)
+        const dx = tx + tw / 2 - (fx + fw / 2)
+        const dy = ty + th / 2 - (fy + fh / 2)
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          out.fromJunctionPoint = dx >= 0 ? 'right' : 'left'
+          out.toJunctionPoint = dx >= 0 ? 'left' : 'right'
+        } else {
+          out.fromJunctionPoint = dy >= 0 ? 'bottom' : 'top'
+          out.toJunctionPoint = dy >= 0 ? 'top' : 'bottom'
+        }
+        const laneKey = `${fromSid}:${out.fromJunctionPoint}:${line.to}`
+        const lane = laneByFrom.get(laneKey) || 0
+        laneByFrom.set(laneKey, lane + 1)
+        const spread = lane * 18
+        out.junctionOffset = spread
+        out.textOffset_y = -10 - spread
+        out.textOffset_x = spread % 2 === 0 ? 0 : 6
+      }
+    }
     return out
   })
 }
@@ -314,6 +674,8 @@ export function docToRelationGraph(doc, options = {}) {
   const WF_META_EXTRA = archMode ? 44 : 0
   const WF_H = WF_HEAD + WF_META_EXTRA + WF_CANVAS_H + 12
   const archView = String(options.archView || 'structure')
+  const layoutPos = doc?.meta?.studio_layout?.states || {}
+  const flowBlockByState = flowBlockMap(doc)
   let rootId = ''
 
   if (entries.length >= 1 && !hideRoot) {
@@ -339,22 +701,60 @@ export function docToRelationGraph(doc, options = {}) {
 
   const launchId = String(doc?.meta?.tab_bar?.launch_state_id || '').trim()
   const homeStateId = String(doc?.meta?.tab_bar?.home_state_id || '').trim()
+  const studioLayoutMode = String(doc?.meta?.studio_layout?.layout_mode || '')
+  const useFlowHotspots = archMode && isAtlas
+
+  const wfByState = new Map()
+  for (const st of states) {
+    const sid = stateId(st)
+    if (!sid) continue
+    wfByState.set(sid, wireframeForStatePrepared(doc, sid, allEdges))
+  }
 
   for (const st of states) {
     const sid = stateId(st)
     if (!sid) continue
-    const intel = overlay[sid] || {}
+    const fb = flowBlockByState.get(sid) || null
+    const slot = layoutPos[sid] || null
+    const layoutBlockId = String(slot?.flow_block_id || '').trim()
+    const intel = {
+      ...(overlay[sid] || {}),
+      flowBlockName: layoutBlockId ? fb?.display_name || '' : '',
+    }
     const isEntry = Boolean(st.entry) || entries.includes(sid)
     const labelsMap = doc?.meta?.tab_bar?.labels || {}
     const tabLabel = String(labelsMap[sid] || st?.meta?.tab || '').trim()
     const tabSlot = isEntry ? tabSlotForLabel(doc, tabLabel) : null
-    const wf = applyNavHintsToWireframe(wireframeForState(doc, sid), sid, allEdges)
+    const wf = wfByState.get(sid) || applyNavHintsToWireframe(wireframeForState(doc, sid), sid, allEdges)
     const meta = st?.meta || {}
+    const outgoingNav = allEdges.filter(
+      (e) => edgeKind(e) === 'nav' && edgeFrom(e) === sid,
+    )
+    const navOutgoing = outgoingNav.map((e) => edgeTo(e)).filter(Boolean)
+    const hasHotspotEdge = (wf.regions || []).some(
+      (r) => Boolean(r.nav_to) && navOutgoing.includes(String(r.nav_to)),
+    )
     const layoutClass = String(meta.layout_class || '').trim()
     const layoutExtent = meta.layout_extent && typeof meta.layout_extent === 'object' ? meta.layout_extent : {}
     const morphCount = Number(meta.morph_count || 0)
     const evidenceTier = String(meta.evidence_tier || '').trim()
-    const hasWf = showWireframe && (wf.regions?.length > 0)
+    const hasWf =
+      showWireframe &&
+      ((wf.regions?.length > 0) || (useFlowHotspots && outgoingNav.length > 0))
+    if (hasWf && !(wf.regions?.length > 0) && outgoingNav.length > 0) {
+      wf.regions = [
+        ...(wf.regions || []),
+        {
+          source: 'nav_hint',
+          id: 'nav-anchor-placeholder',
+          label: '进入',
+          clickable: true,
+          nav_to: edgeTo(outgoingNav[0]),
+          rect: { x: 0.14, y: 0.72, w: 0.72, h: 0.08 },
+        },
+      ]
+      wfByState.set(sid, wf)
+    }
     if (!rootId && (sid === launchId || sid === homeStateId || isEntry)) rootId = sid
     nodes.push({
       id: sid,
@@ -367,8 +767,8 @@ export function docToRelationGraph(doc, options = {}) {
         entry: isEntry,
         showWireframe: hasWf,
         wireframe: wf,
-        connectHotspots: false,
-        editableHotspots: false,
+        connectHotspots: useFlowHotspots && hasWf && navOutgoing.length > 0,
+        editableHotspots: editableHotspots && useFlowHotspots && navOutgoing.length > 0,
         appId: String(doc?.app_id || options.appId || ''),
         intelWikiCount: intel.wikiCount || 0,
         intelDocCount: intel.docCount || 0,
@@ -381,6 +781,9 @@ export function docToRelationGraph(doc, options = {}) {
         layoutExtent,
         morphCount,
         evidenceTier,
+        flowBlockId: layoutBlockId,
+        flowBlockName: layoutBlockId ? fb?.display_name || '' : '',
+        navOutgoing,
       },
     })
   }
@@ -390,8 +793,11 @@ export function docToRelationGraph(doc, options = {}) {
   }
 
   const tabEntrySet = new Set(entries)
-  const showNav = archMode ? archView === 'nav' : (archView === 'nav' || archView === 'structure')
-  const showHierarchy = archView === 'structure'
+  const archUnified = archMode && isAtlas
+  const showNav = archUnified ? true : archView === 'nav' || archView === 'structure'
+  const showHierarchy = archUnified ? false : archView === 'structure'
+  const showAuxEdges = !archUnified && showHierarchy
+  const jumpOnly = false
   for (const ed of allEdges) {
     const from = edgeFrom(ed)
     const to = edgeTo(ed)
@@ -399,7 +805,7 @@ export function docToRelationGraph(doc, options = {}) {
     const kind = edgeKind(ed)
     const meta = ed.meta || {}
     if (kind === 'hierarchy') {
-      if (!showHierarchy) continue
+      if (!showAuxEdges) continue
       if (tabEntrySet.has(from)) continue
       pushLine({
         from,
@@ -414,7 +820,7 @@ export function docToRelationGraph(doc, options = {}) {
       continue
     }
     if (kind === 'tab_scope') {
-      if (!showHierarchy) continue
+      if (!showAuxEdges) continue
       const hasNav = allEdges.some(
         (e) => edgeKind(e) === 'nav' && edgeFrom(e) === from && edgeTo(e) === to,
       )
@@ -432,24 +838,46 @@ export function docToRelationGraph(doc, options = {}) {
       continue
     }
     if (kind !== 'nav' || !showNav) continue
+    if (jumpOnly) {
+      const rel = String(meta.transition?.relation || '')
+      if (rel === 'intra') continue
+    }
     const eid = String(ed.id || '')
     if (eid.startsWith('edge.tab.')) continue
     const label = String(meta.action_label || meta.note || '进入').replace(/observed×\d+/, '进入')
+    const driver = inferNavDriver(meta)
+    const lineText = formatArchNavLineText(label, driver, { jumpOnly })
     const isRev = Boolean(meta.reverse)
-    const lineFrom = from
-    const fromType = RG_TARGET_NODE
+    const passiveAnchor = archMode && isAtlas && isPassiveNavDriver(driver)
+    const wf = wfByState.get(from) || applyNavHintsToWireframe(wireframeForState(doc, from), from, allEdges)
+    let lineFrom
+    if (archMode && isAtlas) {
+      if (passiveAnchor) {
+        lineFrom = { from, fromType: RG_TARGET_NODE, fromJunctionPoint: 'bottom' }
+      } else {
+        const ensured = ensureArchNavLineFrom(from, to, wf, meta)
+        lineFrom = ensured.lineFrom
+        wfByState.set(from, ensured.wireframe)
+      }
+    } else {
+      lineFrom = resolveNavLineFrom(from, to, wf, meta)
+    }
     const navColor = archMode ? (isRev ? '#c2410c' : '#1d4ed8') : isRev ? '#ea580c' : '#475569'
     const navWidth = archMode ? (isRev ? 2.5 : 3) : isRev ? 1.5 : 2
+    const dash = driverDashType(driver)
     pushLine({
-      from: lineFrom,
+      from: lineFrom.from,
       to,
-      fromType,
+      fromType: lineFrom.fromType,
       toType: RG_TARGET_NODE,
-      text: label,
+      fromJunctionPoint: lineFrom.fromJunctionPoint,
+      text: lineText,
       color: navColor,
       lineWidth: navWidth,
-      dashType: isRev ? 4 : undefined,
-      data: { edgeId: ed.id, manual: Boolean(meta.manual) },
+      dashType: isRev && !dash ? 4 : dash,
+      lineShape: archMode ? RG_LINE_SHAPE_CURVE : undefined,
+      force_elastic: archMode ? 32 : undefined,
+      data: { edgeId: ed.id, manual: Boolean(meta.manual), driver, passiveAnchor },
     })
   }
 
@@ -457,7 +885,7 @@ export function docToRelationGraph(doc, options = {}) {
     const sid = stateId(st)
     const parent = String(st?.meta?.parent_state_id || '').trim()
     if (!parent || parent === sid || tabEntrySet.has(parent)) continue
-    if (!showHierarchy) continue
+    if (!showAuxEdges) continue
     if (allEdges.some((e) => edgeKind(e) === 'hierarchy' && edgeFrom(e) === parent && edgeTo(e) === sid)) {
       continue
     }
@@ -473,17 +901,25 @@ export function docToRelationGraph(doc, options = {}) {
     })
   }
 
-  const layoutPos = doc?.meta?.studio_layout?.states || {}
-  const nodeIdList = nodes.map((n) => String(n.id || ''))
-  const layoutKeys = Object.keys(layoutPos || {})
-  const layoutMatchesGraph =
-    layoutKeys.length > 0 &&
-    layoutKeys.length === nodeIdList.length &&
-    nodeIdList.every((id) => layoutPos[id] && Number.isFinite(Number(layoutPos[id].x)))
-  // Atlas 架构图不用旧「配置图」拖出来的 studio_layout，避免卡片挤成一排、连线被挡
-  let useFixed = layoutMatchesGraph && !(archMode && isAtlas)
+  const layoutPosFinal = layoutPos
+  const atlasLayout = String(doc?.meta?.atlas_layout || '')
+  const useFlowBlockLayout =
+    archMode && isAtlas && (atlasLayout === 'flow_blocks' || studioLayoutMode === 'free_canvas')
+  const layoutKeys = Object.keys(layoutPosFinal || {})
+  const stateNodeIds = nodes
+    .filter((n) => !String(n.id || '').startsWith('__block__'))
+    .map((n) => String(n.id || ''))
+  const allStatesHaveLayout =
+    stateNodeIds.length > 0 &&
+    stateNodeIds.every(
+      (id) => layoutPosFinal[id] && Number.isFinite(Number(layoutPosFinal[id].x)),
+    )
+  const layoutMatchesGraph = layoutKeys.length > 0 && allStatesHaveLayout
+  let useFixed =
+    layoutMatchesGraph &&
+    (useFlowBlockLayout || studioLayoutMode === 'free_canvas' || !(archMode && isAtlas))
   let laidOutNodes = nodes.map((n) => {
-    const pos = layoutPos[n.id]
+    const pos = layoutPosFinal[n.id]
     if (!useFixed || !pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y))) {
       return n
     }
@@ -495,10 +931,51 @@ export function docToRelationGraph(doc, options = {}) {
     }
   })
 
-  if (archMode && isAtlas && !useFixed) {
+  if (useFlowBlockLayout && layoutKeys.length) {
+    useFixed = true
+    laidOutNodes = nodes.map((n) => {
+      const pos = layoutPosFinal[n.id]
+      if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y))) return n
+      return { ...n, x: Number(pos.x), y: Number(pos.y), fixed: true }
+    })
+    const shells = buildFlowBlockShellNodes(doc, layoutPosFinal, WF_W, WF_H, {
+      enabled: !(archMode && isAtlas),
+    })
+    laidOutNodes = [...shells, ...laidOutNodes]
+  } else if (archMode && isAtlas && !useFixed) {
     useFixed = true
     laidOutNodes = layoutAtlasArchGrid(laidOutNodes, { wfW: WF_W, wfH: WF_H })
   }
+
+  if (archMode && isAtlas) {
+    laidOutNodes = laidOutNodes.map((n) => {
+      const id = String(n.id || '')
+      if (!id || id.startsWith('__block__') || !n.data?.showWireframe) return n
+      const wf = wfByState.get(id)
+      if (!wf) return n
+      const outgoingNav = allEdges.filter((e) => edgeKind(e) === 'nav' && edgeFrom(e) === id)
+      const hot = (wf.regions || []).some((r) => Boolean(r.nav_to)) || outgoingNav.length > 0
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          wireframe: wf,
+          connectHotspots: useFlowHotspots && hot,
+          editableHotspots: editableHotspots && useFlowHotspots && hot,
+          navOutgoing: allEdges
+            .filter((e) => edgeKind(e) === 'nav' && edgeFrom(e) === id)
+            .map((e) => edgeTo(e))
+            .filter(Boolean),
+        },
+      }
+    })
+  }
+
+  laidOutNodes.sort((a, b) => {
+    const sa = String(a.id || '').startsWith('__block__') ? 0 : 1
+    const sb = String(b.id || '').startsWith('__block__') ? 0 : 1
+    return sa - sb || String(a.id).localeCompare(String(b.id))
+  })
 
   let graphRootId = rootId
   if (hideRoot) {
@@ -510,24 +987,35 @@ export function docToRelationGraph(doc, options = {}) {
     const to = String(line.to || '').trim()
     if (!to || !nodeIds.has(to)) return false
     let fromNode = String(line.from || '').trim()
+    if (fromNode.startsWith('__block__')) return false
     if (line.fromType === RG_TARGET_HTML) {
+      fromNode = parseHotspotTargetId(fromNode).stateId || fromNode
+    }
+    if (isConnectFromType(line.fromType)) {
       fromNode = parseHotspotTargetId(fromNode).stateId || fromNode
     }
     return fromNode && nodeIds.has(fromNode)
   })
 
   let routedLines = visibleLines
+  let fakeLines = []
   if (archMode) {
     routedLines = dedupeArchNavLines(visibleLines)
-    routedLines = routeArchLines(routedLines, laidOutNodes)
+    const useOrth = false
+    routedLines = routeArchLines(routedLines, laidOutNodes, { orth: useOrth })
+    const split = splitConnectFakeLines(routedLines)
+    routedLines = split.lines
+    fakeLines = split.fakeLines
   }
 
   return {
     rootId: graphRootId,
     nodes: laidOutNodes,
     lines: routedLines,
+    fakeLines,
     layoutName: useFixed ? 'fixed' : 'center',
     layoutFrom: 'left',
+    useFlowBlockLayout,
     layoutConfig: useFixed
       ? { layoutName: 'fixed' }
       : {
@@ -539,7 +1027,7 @@ export function docToRelationGraph(doc, options = {}) {
   }
 }
 
-export function relationGraphOptions(editable = false, { curved = false } = {}) {
+export function relationGraphOptions(editable = false, { curved = false, archStyle = false } = {}) {
   return {
     definitelyNoDataProviderNeeded: true,
     debug: false,
@@ -549,7 +1037,7 @@ export function relationGraphOptions(editable = false, { curved = false } = {}) 
     allowSwitchLineShape: false,
     allowSwitchJunctionPoint: false,
     defaultJunctionPoint: 'border',
-    defaultLineShape: curved ? RG_LINE_SHAPE_CURVE : 1,
+    defaultLineShape: curved ? RG_LINE_SHAPE_CURVE : archStyle ? RG_LINE_SHAPE_ORTH : 1,
     defaultNodeShape: 1,
     defaultNodeBorderWidth: 2,
     defaultNodeBorderColor: '#93c5fd',

@@ -8,8 +8,11 @@ import NavGraphNodeHover from '@/views/Testing/NavGraphNodeHover.vue'
 import NavGraphInspectDialog from '@/views/Testing/NavGraphInspectDialog.vue'
 import {
   docToRelationGraph,
+  enrichArchLineArrows,
   navEdgeFromLineJson,
   relationGraphOptions,
+  RG_DEFAULT_LINE_MARKER,
+  RG_LINE_SHAPE_CURVE,
   stateId,
 } from '@/utils/navRelationGraph'
 import {
@@ -88,7 +91,11 @@ const baseDoc = computed(() => {
 })
 
 const graphOptions = computed(() => {
-  const base = relationGraphOptions(isArch.value || !isPreview.value, { curved: isArch.value })
+  const flowLayout = Boolean(baseDoc.value?.meta?.atlas_layout === 'flow_blocks')
+  const base = relationGraphOptions(isArch.value || !isPreview.value, {
+    curved: isArch.value,
+    archStyle: false,
+  })
   if (!isArch.value) return base
   return {
     ...base,
@@ -96,8 +103,10 @@ const graphOptions = computed(() => {
     defaultLineWidth: 2.5,
     defaultShowLineLabel: true,
     defaultLineTextOffset_y: -6,
-    defaultLineMarker: 'arrow',
-    defaultLineShape: 6,
+    defaultLineMarker: RG_DEFAULT_LINE_MARKER,
+    defaultShowEndArrow: true,
+    defaultShowStartArrow: false,
+    defaultLineShape: RG_LINE_SHAPE_CURVE,
     defaultJunctionPoint: 'border',
     defaultLineUseTextPath: false,
   }
@@ -120,21 +129,57 @@ const loadGraph = async () => {
       if (!isArch.value) return n
       return { ...n, data: { ...(n.data || {}), archInteract: true } }
     })
+    const fakeLinesDeferred = payload.fakeLines || []
     await gi.setJsonData({
       rootId: payload.rootId,
       nodes,
       lines: payload.lines,
+      fakeLines: isArch.value && fakeLinesDeferred.length ? [] : fakeLinesDeferred,
       layoutName: payload.layoutName,
       ...(payload.layoutConfig ? { layout: payload.layoutConfig } : {}),
     })
     await nextTick()
     await nextTick()
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
     const inst = typeof gi.getInstance === 'function' ? gi.getInstance() : gi
+    const rgInstanceId = String(inst?.getOptions?.()?.instanceId || inst?.options?.instanceId || '')
+    if (inst && typeof inst.setOptions === 'function') {
+      inst.setOptions({
+        defaultLineShape: RG_LINE_SHAPE_CURVE,
+        allowSwitchLineShape: false,
+        defaultShowEndArrow: true,
+        defaultShowStartArrow: false,
+        defaultLineMarker: RG_DEFAULT_LINE_MARKER,
+      })
+    }
+    if (inst && typeof inst.updateConnectTargetsByNodeId === 'function') {
+      for (const n of nodes) {
+        const id = String(n.id || '')
+        if (!id || id.startsWith('__block__')) continue
+        inst.updateConnectTargetsByNodeId(id)
+      }
+    }
+    await nextTick()
+    await new Promise((r) => requestAnimationFrame(r))
+    if (isArch.value && fakeLinesDeferred.length && inst) {
+      if (typeof inst.clearFakeLines === 'function') inst.clearFakeLines()
+      const fakeWithArrows = enrichArchLineArrows(fakeLinesDeferred, rgInstanceId)
+      if (typeof inst.addFakeLines === 'function') inst.addFakeLines(fakeWithArrows)
+    }
     if (inst && typeof inst.refresh === 'function') {
       inst.refresh()
     }
     gi.moveToCenter()
-    gi.zoomToFit()
+    if (payload.useFlowBlockLayout) {
+      if (typeof gi.zoomToFit === 'function') gi.zoomToFit()
+      if (typeof gi.setZoom === 'function') {
+        const z = typeof gi.getZoom === 'function' ? gi.getZoom() : 100
+        if (z < 55) gi.setZoom(62)
+        if (z > 95) gi.setZoom(88)
+      }
+    } else {
+      gi.zoomToFit()
+    }
   } catch (e) {
     console.error('[NavRelationGraph] setJsonData', e)
   }
@@ -567,10 +612,12 @@ const onLineBeCreated = async (lineInfo) => {
 .graph-canvas-wrap {
   min-height: 0;
   height: 100%;
-  border: 1px solid var(--el-border-color-lighter, #e2e8f0);
-  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
   overflow: hidden;
-  background: #f8fafc;
+  background-color: #f1f5f9;
+  background-image: radial-gradient(circle, #cbd5e1 1px, transparent 1px);
+  background-size: 20px 20px;
 }
 
 .graph-canvas-wrap :deep(.rel-node-peel) {
@@ -593,20 +640,30 @@ const onLineBeCreated = async (lineInfo) => {
   paint-order: stroke fill;
   stroke: #f8fafc;
   stroke-width: 4px;
+  pointer-events: none;
 }
 
-.nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rg-line-peel path) {
+.nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rg-lines-container-el-lines) {
+  z-index: 85 !important;
+}
+
+.nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rg-line-peel .rg-line) {
+  marker-end: var(--rg-line-marker-end);
+  marker-start: var(--rg-line-marker-start);
+}
+
+.nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rg-line-peel path.rg-line) {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rel-node-peel) {
-  z-index: 2;
+  z-index: 3;
 }
 
-.nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rg-line-peel) {
-  z-index: 1;
+.nav-relation-graph.is-arch .graph-canvas-wrap :deep(.rel-node-peel:has(.rg-flow-block-shell)) {
+  z-index: 0 !important;
 }
 
 .rg-host {

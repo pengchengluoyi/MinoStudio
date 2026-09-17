@@ -1,7 +1,7 @@
 {
   "name": "mino-studio",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "main": "dist-electron/main.js",
   "description": "Mino Studio — desktop testing workbench",
   "author": "pengchengluoyi@126.com",
@@ -11,7 +11,8 @@
     "postinstall": "node scripts/ensure-electron.mjs",
     "build": "vite build && electron-builder",
     "preview": "vite preview",
-    "test:scout-layers": "node scripts/check-scout-layers.cjs"
+    "test:scout-layers": "node scripts/check-scout-layers.cjs",
+    "test:nav-arch-graph": "node scripts/check-nav-arch-graph.mjs"
   },
   "engines": {
     "node": ">=20 <25"

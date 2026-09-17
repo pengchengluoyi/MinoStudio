@@ -77,7 +77,8 @@ function loadForm(st) {
   form.entry = Boolean(raw.entry)
   form.displayName = String(meta.display_name || meta.page_title || '').trim()
   const aliases = meta.aliases
-  form.aliases = Array.isArray(aliases) ? aliases.map((a) => String(a || '').trim()).filter(Boolean) : []
+  const rawAliases = Array.isArray(aliases) ? aliases.map((a) => String(a || '').trim()).filter(Boolean) : []
+  form.aliases = rawAliases.filter((a) => a !== form.id && !/^page\.sk/i.test(a))
   form.tab = String(meta.tab || tabFromIdentify(raw) || '').trim()
   form.pageRole = String(meta.page_role || '').trim()
   form.chromeTexts = chromeFromMeta(meta)
