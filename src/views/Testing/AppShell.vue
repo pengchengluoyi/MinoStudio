@@ -104,6 +104,7 @@ const TESTING_NAV = [
     color: '#0ea5e9',
     children: [
       { id: 'arch', label: '架构' },
+      { id: 'flow-blocks', label: '逻辑块' },
       { id: 'test', label: '测试' },
     ],
   },

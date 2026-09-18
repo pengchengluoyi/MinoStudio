@@ -51,7 +51,8 @@ const accountLabel = (row) => {
   const ident = String(row?.email || row?.phone || row?.username || row?.name || '').trim()
   const env = String(row?.env || '').trim()
   const proj = String(row?.project_name || '').trim()
-  return [ident || row?.id, env, proj].filter(Boolean).join(' · ')
+  const st = String(row?.facets_brief || '').trim()
+  return [ident || row?.id, env, st, proj].filter(Boolean).join(' · ')
 }
 const jobScope = () => {
   const acc = selectedAccount.value

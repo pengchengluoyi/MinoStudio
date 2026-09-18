@@ -81,6 +81,13 @@ export const updateProjectEnv = (projectId, payload) => {
     })
 }
 
+export const getProjectAccountPoolSchema = (projectId) => {
+    return request({
+        url: `/project/${projectId}/account-pool-schema`,
+        method: 'get',
+    })
+}
+
 export const getProjectAccounts = (projectId, env = '') => {
     return request({
         url: `/project/${projectId}/accounts`,
@@ -97,11 +104,94 @@ export const saveProjectAccounts = (projectId, accounts) => {
     })
 }
 
-export const pickProjectAccounts = (projectId, { prompt = '', env = '', surface = '' } = {}) => {
+export const patchProjectAccount = (projectId, accountId, payload) => {
+    return request({
+        url: `/project/${projectId}/accounts/${accountId}`,
+        method: 'patch',
+        data: payload,
+    })
+}
+
+export const createProjectAccount = (projectId, payload) => {
+    return request({
+        url: `/project/${projectId}/accounts`,
+        method: 'post',
+        data: payload,
+    })
+}
+
+export const deleteProjectAccount = (projectId, accountId) => {
+    return request({
+        url: `/project/${projectId}/accounts/${accountId}`,
+        method: 'delete',
+    })
+}
+
+export const pickProjectAccounts = (projectId, { prompt = '', env = '', surface = '', requirements = null } = {}) => {
     return request({
         url: `/project/${projectId}/accounts/pick`,
         method: 'post',
-        data: { prompt, env, surface },
+        data: { prompt, env, surface, requirements: requirements || {} },
+    })
+}
+
+export const getProjectAccountPoolTemplates = (projectId) => {
+    return request({
+        url: `/project/${projectId}/account-pool-templates`,
+        method: 'get',
+    })
+}
+
+export const getProjectAccountPoolLocal = (projectId) => {
+    return request({
+        url: `/project/${projectId}/account-pool-local`,
+        method: 'get',
+    })
+}
+
+export const saveProjectAccountPoolLocal = (projectId, { templates = [], extension_addons = {} } = {}) => {
+    return request({
+        url: `/project/${projectId}/account-pool-local`,
+        method: 'put',
+        data: { templates, extension_addons },
+    })
+}
+
+export const allocateProjectAccount = (projectId, { template_id, env = '', requirements = null } = {}) => {
+    return request({
+        url: `/project/${projectId}/accounts/allocate`,
+        method: 'post',
+        data: { template_id, env, requirements: requirements || {} },
+    })
+}
+
+export const getResourceProfiles = (projectId) => {
+    return request({
+        url: `/project/${projectId}/resource-profiles`,
+        method: 'get',
+    })
+}
+
+export const getAccountFacetExtensions = (projectId) => {
+    return request({
+        url: `/project/${projectId}/account-facet-extensions`,
+        method: 'get',
+    })
+}
+
+export const saveAccountFacetExtensions = (projectId, extensions) => {
+    return request({
+        url: `/project/${projectId}/account-facet-extensions`,
+        method: 'put',
+        data: { extensions },
+    })
+}
+
+export const aiExpandAccountFacetExtensions = (projectId, { hint = '', apply = true } = {}) => {
+    return request({
+        url: `/project/${projectId}/account-facet-extensions/ai-expand`,
+        method: 'post',
+        data: { hint, apply },
     })
 }
 

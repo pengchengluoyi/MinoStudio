@@ -32,7 +32,7 @@ const PREP_RULES = [
 
 const PREP_UNSUPPORTED = [
   { kind: 'remote_config', code: 'PREP.UNSUPPORTED.remote_config', re: /远程配置|远程开关|feature\s*flag|灰度开关/i },
-  { kind: 'backend_data', code: 'PREP.UNSUPPORTED.backend_data', re: /已购|指定订单|造数|服务端数据|号池标签|账号标签/ },
+  { kind: 'backend_data', code: 'PREP.UNSUPPORTED.backend_data', re: /已购|指定订单|造数|服务端数据|号池状态|账号状态/ },
   { kind: 'sms_live', code: 'PREP.UNSUPPORTED.sms_live', re: /真短信|活短信|收到短信|短信验证码到达/ },
   { kind: 'external_channel', code: 'PREP.UNSUPPORTED.external_channel', re: /接电话|来电|推送必达/ },
   { kind: 'device_mock', code: 'PREP.UNSUPPORTED.device_mock', re: /地理围栏|模拟定位|时间旅行/ },

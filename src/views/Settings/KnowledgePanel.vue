@@ -260,7 +260,9 @@ const selectedAccount = computed(() => accounts.value.find((a) => a.id === selec
 const accountLabel = (row) => {
   const ident = String(row?.email || row?.phone || row?.username || row?.name || '').trim()
   const env = String(row?.env || '').trim()
-  return env ? `${ident} · ${env}` : ident || row?.id || '未填号码'
+  const st = String(row?.facets_brief || '').trim()
+  const parts = [ident || row?.id || '未填号码', env, st].filter(Boolean)
+  return parts.join(' · ')
 }
 const jobScope = () => {
   const acc = selectedAccount.value

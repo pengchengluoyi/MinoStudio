@@ -176,7 +176,7 @@ export function buildClientTemplate(appId, projectId = '') {
       guard_catalog: [],
     },
     test_data: {
-      lease_tags: [],
+      lease_requirements: {},
       anchor_field: anchor,
     },
     states,

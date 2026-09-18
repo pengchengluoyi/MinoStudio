@@ -311,7 +311,9 @@ function buildFlowBlockShellNodes(doc, layoutPos, wfW, wfH, { enabled = true } =
   const stateIds = new Set(
     (Array.isArray(doc?.states) ? doc.states : []).map((s) => stateId(s)).filter(Boolean),
   )
-  const blocks = Array.isArray(doc?.meta?.flow_blocks) ? doc.meta.flow_blocks : []
+  const blocks = (Array.isArray(doc?.meta?.flow_blocks) ? doc.meta.flow_blocks : []).filter(
+    (b) => !isGlobalFlowBlock(b),
+  )
   const nameById = new Map(
     blocks.map((b) => [String(b?.flow_block_id || '').trim(), String(b?.display_name || '').trim()]),
   )
@@ -538,11 +540,18 @@ function layoutAtlasArchGrid(nodes, { wfW, wfH, colGap = 112, rowGap = 148, maxC
   })
 }
 
+function isGlobalFlowBlock(block) {
+  const bid = String(block?.flow_block_id || '').trim()
+  const origin = String(block?.block_origin || '').trim()
+  return origin === 'global_catalog' || bid.startsWith('fb.global.')
+}
+
 function flowBlockMap(doc) {
   const blocks = doc?.meta?.flow_blocks
   if (!Array.isArray(blocks)) return new Map()
   const m = new Map()
   for (const b of blocks) {
+    if (isGlobalFlowBlock(b)) continue
     const bid = String(b?.flow_block_id || '').trim()
     if (!bid) continue
     const name = String(b?.display_name || bid).trim()
