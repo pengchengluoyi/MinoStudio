@@ -93,7 +93,7 @@ Supports a multi-arch file `{ version, items: [{ os, arch, url, sha256, installe
 
 `scout-installed-version.installed` is true only when the Scout binary exists. A leftover `config.json` or LaunchAgent plist does not count as installed. Setup progress (download / unzip / config / start) lives in the main process and is restored when returning to the page.
 
-本机启停走 IPC。远程已连接节点走 Nexus `POST /runtime/nodes/{id}/command` → 协议 `EXECUTE node.stop` / `node.restart`。离线专机无法远程启动。远程更新未实现，只在本机走 GitHub manifest。
+本机启停/安装走 Electron IPC（GitHub 分层 manifest）。远程已连接节点走 Nexus `POST /runtime/nodes/{id}/command` → `EXECUTE node.stop` / `node.restart` / **`node.update`**（Scout ≥0.1.21 从 GitHub 拉分层包）。**Studio 网页端**不能写本机磁盘，更新在线节点应走远程 `node.update`；浏览器里「本机更新」仅桌面 Studio 可用。
 
 `GET /runtime/nodes?studio_id=` 按当前登录用户与本工作台 `studio_id` 过滤。未归属节点仅管理员可见。离线节点仍列出。
 

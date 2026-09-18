@@ -127,6 +127,16 @@ const rowNeedsUpdate = (row) => {
   if (!cur || !latestVersion.value) return false
   return scoutVersionStatus(cur, latestVersion.value) === 'outdated'
 }
+
+const rowOnline = (row) => Boolean(row?.status === 'online' || row?.online || row?.alive)
+
+const remoteCommandId = (row) => {
+  const nid = String(row?.node_id || row?.scout_id || '').trim()
+  return nid && nid !== 'local' ? nid : ''
+}
+
+/** 浏览器不能写本机文件；在线节点一律走 Nexus `node.update`。 */
+const canRemoteUpdate = (row) => rowOnline(row) && Boolean(remoteCommandId(row))
 const downloadPercent = computed(() => {
   const n = Number(setupJob.value?.percent ?? installProgress.value?.percent)
   return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null
@@ -449,7 +459,13 @@ const runRemote = async (row, command) => {
     const res = await sendNodeCommand(row.node_id || row.scout_id, command, { studioId: studioId.value })
     const data = res?.data || res || {}
     if (data.status && data.status !== 'pass') {
-      throw new Error(data.error || data.summary || '指令失败')
+      const err = data.error || data.summary || '指令失败'
+      if (/远程更新未实现/i.test(err)) {
+        throw new Error(
+          `${err}（执行机 Scout 版本过旧，需先装 v0.1.21+：复制远程安装命令或在该机执行 mino-scout update）`,
+        )
+      }
+      throw new Error(err)
     }
     ElMessage.success(data.summary || '已下发')
     await refreshNodes()
@@ -467,12 +483,16 @@ const act = async (row, command) => {
     return
   }
   if (command === 'update') {
-    if (rowActions(row).local) {
+    if (isElectron.value && rowActions(row).local) {
       await updateLocal()
       return
     }
-    if (rowActions(row).update?.enabled) {
+    if (canRemoteUpdate(row)) {
       await runRemote(row, 'update')
+      return
+    }
+    if (rowActions(row).local && !isElectron.value) {
+      ElMessage.warning('浏览器不能安装/更新本机 Scout。请用「复制远程安装命令」在专机执行，或打开桌面版 Studio。')
       return
     }
     ElMessage.warning(rowActions(row).update?.reason || '当前不可更新')
@@ -710,12 +730,12 @@ onUnmounted(() => {
           @click="openReleases"
         >GitHub Releases</button>
         <button
-          v-if="updateAvailable && (isElectron || localRow.online)"
+          v-if="updateAvailable && (isElectron || canRemoteUpdate(localRow))"
           type="button"
           class="settings-action-pill"
-          :disabled="updating || setupInProgress || !release?.url"
+          :disabled="updating || setupInProgress || (!isElectron && !canRemoteUpdate(localRow))"
           @click="act(localRow, 'update')"
-        >{{ setupInProgress || updating ? setupProgressText : `更新到 v${latestVersion}` }}</button>
+        >{{ setupInProgress || updating ? setupProgressText : (isElectron ? `本机更新到 v${latestVersion}` : `远程更新到 v${latestVersion}`) }}</button>
       </div>
     </section>
 
