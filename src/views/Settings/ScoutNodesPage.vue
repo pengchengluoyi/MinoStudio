@@ -12,7 +12,13 @@ import {
   sendNodeCommand,
 } from '@/api/runtime'
 import { canInstallLocalScout, nexusOrigin, scoutManifestUrl } from '@/utils/config'
-import { packedArchForOs, scoutReleasesPageUrl, compareScoutVersions, normalizeScoutVersion } from '@/utils/scoutRelease'
+import {
+  packedArchForOs,
+  scoutReleasesPageUrl,
+  normalizeScoutVersion,
+  nodeScoutVersion,
+  scoutVersionStatus,
+} from '@/utils/scoutRelease'
 import { openExternalUrl } from '@/utils/openExternal'
 import {
   nodeActionState,
@@ -86,19 +92,41 @@ const studioId = computed(() => localScout.value.studioId || '')
 const localId = computed(() => localScout.value.scoutId || '')
 const releasesPage = computed(() => scoutReleasesPageUrl(scoutManifestUrl()))
 const latestVersion = computed(() => normalizeScoutVersion(release.value?.version || ''))
-const installedVersion = computed(() => normalizeScoutVersion(localScout.value.version || ''))
+const installedVersion = computed(() => {
+  const cfg = normalizeScoutVersion(localScout.value.version || '')
+  if (cfg) return cfg
+  const id = String(localId.value || '').toLowerCase()
+  if (!id) return ''
+  const hit = nodes.value.find((n) => String(n.node_id || n.scout_id || '').toLowerCase() === id)
+  return nodeScoutVersion(hit)
+})
 const localInstalled = computed(() => Boolean(
   localScout.value.installed || localScout.value.appInstalled,
 ))
 const setupInProgress = computed(() => Boolean(setupJob.value.active))
 const versionCheck = computed(() => {
-  if (!localInstalled.value || setupInProgress.value) return ''
+  if (setupInProgress.value) return ''
   if (checkingVersion.value) return 'checking'
   if (!latestVersion.value || releaseMissing.value) return 'unknown'
-  if (!installedVersion.value) return 'outdated'
-  return compareScoutVersions(installedVersion.value, latestVersion.value) >= 0 ? 'latest' : 'outdated'
+  if (!localInstalled.value && !installedVersion.value) return ''
+  if (!installedVersion.value) return 'unknown'
+  return scoutVersionStatus(installedVersion.value, latestVersion.value)
 })
 const updateAvailable = computed(() => versionCheck.value === 'outdated')
+const versionBannerTitle = computed(() => {
+  if (checkingVersion.value) return '正在检测 Scout 版本…'
+  if (!latestVersion.value) return '无法获取 GitHub 稳定版'
+  return `GitHub 最新稳定版 v${latestVersion.value}`
+})
+const versionBannerHint = computed(() => {
+  if (releaseMissing.value) return releaseError.value || '请检查网络或 manifest 配置'
+  return '比对来源：GitHub Release Latest（不含 Pre-release）。推 main 触发的 dev 包不会当作最新。'
+})
+const rowNeedsUpdate = (row) => {
+  const cur = nodeScoutVersion(row)
+  if (!cur || !latestVersion.value) return false
+  return scoutVersionStatus(cur, latestVersion.value) === 'outdated'
+}
 const downloadPercent = computed(() => {
   const n = Number(setupJob.value?.percent ?? installProgress.value?.percent)
   return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null
@@ -329,17 +357,24 @@ const localDevices = computed(() => {
 const showInstallUi = computed(() => setupInProgress.value || !localInstalled.value)
 
 const rowActions = (row) => {
+  const needsUpdate = rowNeedsUpdate(row)
   if (row?._local) {
     const lid = String(row.scout_id || resolvedLocalId.value || localId.value || 'local')
     return nodeActionState(
       { ...row, node_id: lid, scout_id: lid },
-      { localScoutId: lid, isElectron: isElectron.value, installed: localInstalled.value },
+      {
+        localScoutId: lid,
+        isElectron: isElectron.value,
+        installed: localInstalled.value,
+        updateAvailable: needsUpdate || updateAvailable.value,
+      },
     )
   }
   return nodeActionState(row, {
     localScoutId: resolvedLocalId.value || localId.value,
     isElectron: isElectron.value,
     installed: localInstalled.value,
+    updateAvailable: needsUpdate,
   })
 }
 
@@ -432,11 +467,15 @@ const act = async (row, command) => {
     return
   }
   if (command === 'update') {
-    if (!rowActions(row).local) {
-      ElMessage.warning('请在该节点本机 Studio 更新')
+    if (rowActions(row).local) {
+      await updateLocal()
       return
     }
-    await updateLocal()
+    if (rowActions(row).update?.enabled) {
+      await runRemote(row, 'update')
+      return
+    }
+    ElMessage.warning(rowActions(row).update?.reason || '当前不可更新')
     return
   }
   if (command === 'start') {
@@ -652,6 +691,34 @@ onUnmounted(() => {
       </div>
     </header>
 
+    <section class="settings-card version-banner">
+      <div class="version-banner-main">
+        <div class="settings-kicker">Scout 版本</div>
+        <p class="version-banner-title">{{ versionBannerTitle }}</p>
+        <p class="version-banner-hint">{{ versionBannerHint }}</p>
+        <p v-if="installedVersion" class="version-banner-local">
+          本机/当前节点报告版本：<strong>v{{ installedVersion }}</strong>
+          <span v-if="versionCheck === 'latest'" class="version-ok"> · 已对齐稳定版</span>
+          <span v-else-if="versionCheck === 'outdated'" class="version-warn"> · 可更新</span>
+        </p>
+      </div>
+      <div class="row-actions">
+        <button
+          v-if="releasesPage"
+          type="button"
+          class="settings-action-pill"
+          @click="openReleases"
+        >GitHub Releases</button>
+        <button
+          v-if="updateAvailable && (isElectron || localRow.online)"
+          type="button"
+          class="settings-action-pill"
+          :disabled="updating || setupInProgress || !release?.url"
+          @click="act(localRow, 'update')"
+        >{{ setupInProgress || updating ? setupProgressText : `更新到 v${latestVersion}` }}</button>
+      </div>
+    </section>
+
     <!-- 未安装：整块切换为下载安装 UI -->
     <section v-if="showInstallUi" class="settings-card install-hero">
       <div class="settings-kicker">本机 Scout</div>
@@ -856,6 +923,12 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="版本" width="88">
+          <template #default="{ row }">
+            <span v-if="nodeScoutVersion(row)">v{{ nodeScoutVersion(row) }}</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="设备" width="64">
           <template #default="{ row }">{{ row.device_count ?? (row.devices || []).length }}</template>
         </el-table-column>
@@ -865,9 +938,16 @@ onUnmounted(() => {
         <el-table-column label="心跳" width="100">
           <template #default="{ row }">{{ heartbeatText(row) || '—' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
+              <button
+                v-if="rowActions(row).update.visible"
+                type="button"
+                class="settings-action-pill"
+                :disabled="!rowActions(row).update.enabled || remoteBusy"
+                @click="act(row, 'update')"
+              >更新</button>
               <button
                 v-if="rowActions(row).stop.visible"
                 type="button"
@@ -953,6 +1033,30 @@ onUnmounted(() => {
 .version-status.is-latest {
   color: #059669;
 }
+.version-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+}
+.version-banner-title {
+  margin: 6px 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--mo-text);
+}
+.version-banner-hint,
+.version-banner-local {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mo-muted);
+  line-height: 1.5;
+}
+.version-ok { color: #059669; font-weight: 600; }
+.version-warn { color: #b45309; font-weight: 600; }
 .row-actions {
   display: flex;
   flex-wrap: wrap;

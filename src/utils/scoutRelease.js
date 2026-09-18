@@ -89,6 +89,30 @@ export const scoutReleasesPageUrl = (manifestUrl) => {
   return m ? `${m[1]}/latest` : ''
 }
 
+export const scoutRepoFromManifestUrl = (manifestUrl) => {
+  const m = String(manifestUrl || '').match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\//)
+  return m ? m[1] : 'pengchengluoyi/MinoScout'
+}
+
+/** GitHub `/releases/latest` 不含 Pre-release；与 manifest 下载地址一致。 */
+export const manifestUrlForTag = (manifestUrl, tag) => {
+  const repo = scoutRepoFromManifestUrl(manifestUrl)
+  const ver = normalizeScoutVersion(tag)
+  if (!ver) return manifestUrl
+  return `https://github.com/${repo}/releases/download/v${ver}/manifest.json`
+}
+
+export const nodeScoutVersion = (node) =>
+  normalizeScoutVersion(node?.scout_version || node?.version || '')
+
+export const scoutVersionStatus = (installed, latest) => {
+  const cur = normalizeScoutVersion(installed)
+  const lat = normalizeScoutVersion(latest)
+  if (!lat) return 'unknown'
+  if (!cur) return 'unknown'
+  return compareScoutVersions(cur, lat) >= 0 ? 'latest' : 'outdated'
+}
+
 export const normalizeScoutVersion = (value) => String(value || '').trim().replace(/^v/i, '')
 
 /** @returns {number} 1 if a>b, -1 if a<b, 0 if equal */

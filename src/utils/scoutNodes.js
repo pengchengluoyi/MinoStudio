@@ -28,7 +28,10 @@ export function ownershipLabel(node, { studioId = '', userId = '' } = {}) {
   return node?.owner_name || sid || owner || '未归属'
 }
 
-export function nodeActionState(node, { localScoutId = '', isElectron = false, installed = false } = {}) {
+export function nodeActionState(
+  node,
+  { localScoutId = '', isElectron = false, installed = false, updateAvailable = false } = {},
+) {
   const local = isLocalNode(node, localScoutId)
   const online = nodeOnline(node)
   const desktop = Boolean(isElectron)
@@ -53,9 +56,9 @@ export function nodeActionState(node, { localScoutId = '', isElectron = false, i
         reason: '',
       },
       update: {
-        visible: desktop,
-        enabled: desktop,
-        reason: desktop ? '' : '请在桌面端更新本机执行器',
+        visible: desktop && updateAvailable,
+        enabled: desktop && updateAvailable,
+        reason: updateAvailable ? '' : '当前已是最新稳定版',
       },
     }
   }
@@ -78,9 +81,9 @@ export function nodeActionState(node, { localScoutId = '', isElectron = false, i
       reason: online ? '' : '节点离线，无法下发',
     },
     update: {
-      visible: false,
-      enabled: false,
-      reason: '请在该节点本机 Studio 更新',
+      visible: online && updateAvailable,
+      enabled: online && updateAvailable,
+      reason: !online ? '节点离线，无法下发' : (updateAvailable ? '' : '当前已是最新稳定版'),
     },
   }
 }
