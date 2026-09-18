@@ -11,11 +11,13 @@ import {
 } from '@/api/runtime'
 import { canInstallLocalScout, nexusOrigin, scoutManifestUrl } from '@/utils/config'
 import { packedArchForOs, scoutReleasesPageUrl } from '@/utils/scoutRelease'
+import { buildScoutInstallCommand, copyTextToClipboard } from '@/utils/scoutInstallCommand'
 import { openExternalUrl } from '@/utils/openExternal'
 import { ipcPayload } from '@/utils/ipcPayload'
 import './settings-ui.css'
 
 const installing = ref(false)
+const copyingRemote = ref(false)
 const checking = ref(false)
 const localScout = ref({
   installed: false, appInstalled: false, running: false, pid: null,
@@ -154,6 +156,43 @@ const waitForNode = async () => {
   return false
 }
 
+const resolveStudioId = async () => {
+  let sid = String(localScout.value.studioId || '').trim()
+  if (sid) return sid
+  try {
+    const st = await window.electronAPI?.scoutInstalledVersion?.()
+    sid = String(st?.studioId || '').trim()
+  } catch { /* ignore */ }
+  return sid
+}
+
+const copyRemoteInstall = async () => {
+  if (!release.value?.version) {
+    ElMessage.warning(releaseMissing.value ? 'GitHub 上还没有 Scout 发布包' : '请先刷新 release 信息')
+    return
+  }
+  copyingRemote.value = true
+  try {
+    const tokRes = await createScoutInstallToken()
+    const tok = tokRes?.data || tokRes || {}
+    const token = tok.token || ''
+    if (!token) throw new Error('未拿到安装凭证，请确认已登录 Nexus')
+    const cmd = buildScoutInstallCommand({
+      version: release.value.version,
+      token,
+      nexusUrl: tok.nexus_url || origin.value,
+      studioId: await resolveStudioId(),
+      manifestUrl: manifestUrl.value,
+    })
+    await copyTextToClipboard(cmd)
+    ElMessage.success('已复制安装命令。请在执行机终端粘贴（含临时凭证，约 15 分钟内有效，勿外传）。')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '复制失败')
+  } finally {
+    copyingRemote.value = false
+  }
+}
+
 const install = async () => {
   const api = window.electronAPI
   if (typeof api?.scoutSetup !== 'function') {
@@ -281,11 +320,20 @@ onUnmounted(() => {
       >
         <span>{{ stopping ? '停止中…' : '停止本机执行器' }}</span>
       </button>
+      <button
+        v-if="release?.version"
+        type="button"
+        class="settings-action-pill"
+        :disabled="copyingRemote || installing"
+        @click="copyRemoteInstall"
+      >
+        <span>{{ copyingRemote ? '生成中…' : '复制远程安装命令' }}</span>
+      </button>
       <button v-if="canInstall" type="button" class="settings-action-pill" :disabled="installing || starting" @click="install">
         <el-icon><Download /></el-icon>
         <span>{{ installing ? (progress?.percent != null ? `下载中 ${progress.percent}%` : 'Studio 正在安装 Scout…') : (localScout.installed ? (release?.version && String(localScout.version || '') !== String(release.version) ? `更新到 v${release.version}` : '重新安装执行器') : '从 GitHub 下载并安装') }}</span>
       </button>
-      <p v-else class="meta">当前是浏览器页面，不能安装 Scout。请运行 <code>npm run dev</code> 打开 Mino Studio 窗口。</p>
+      <p v-else-if="!canInstall" class="meta">本机浏览器页不能装 Scout；请用上方「复制远程安装命令」在专机执行，或 <code>npm run dev</code> 打开桌面窗口本机安装。</p>
       <button type="button" class="settings-action-pill refresh-pill" :disabled="checking || installing || starting" @click="refresh">
         刷新
       </button>

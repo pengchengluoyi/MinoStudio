@@ -20,6 +20,7 @@ import {
 } from '@/utils/scoutNodes'
 import { formatRelativeTime } from '@/utils/relativeTime'
 import { ipcPayload } from '@/utils/ipcPayload'
+import { buildScoutInstallCommand, copyTextToClipboard } from '@/utils/scoutInstallCommand'
 import './settings-ui.css'
 
 const loading = ref(false)
@@ -42,6 +43,7 @@ const starting = ref(false)
 const stopping = ref(false)
 const restarting = ref(false)
 const updating = ref(false)
+const copyingRemote = ref(false)
 const uninstalling = ref(false)
 const installProgress = ref(null)
 const setupJob = ref({
@@ -79,6 +81,7 @@ const props = defineProps({
 const canInstall = computed(() => canInstallLocalScout())
 const isElectron = computed(() => canInstall.value)
 const origin = computed(() => nexusOrigin())
+const manifestUrl = computed(() => scoutManifestUrl())
 const studioId = computed(() => localScout.value.studioId || '')
 const localId = computed(() => localScout.value.scoutId || '')
 const releasesPage = computed(() => scoutReleasesPageUrl(scoutManifestUrl()))
@@ -486,6 +489,44 @@ const scoutSetupSummary = (res) => {
   return `Studio 已安装${tail ? tail : ' Scout'}${size ? `（${size}）` : ''}`
 }
 
+const resolveStudioIdForInstall = async () => {
+  let sid = String(studioId.value || '').trim()
+  if (sid) return sid
+  try {
+    const st = await window.electronAPI?.scoutInstalledVersion?.()
+    sid = String(st?.studioId || '').trim()
+  } catch { /* ignore */ }
+  return sid
+}
+
+const copyRemoteInstall = async () => {
+  const ver = release.value?.version || latestVersion.value
+  if (!ver) {
+    ElMessage.warning('没有可用的 Scout 发布版本')
+    return
+  }
+  copyingRemote.value = true
+  try {
+    const tokRes = await createScoutInstallToken()
+    const tok = tokRes?.data || tokRes || {}
+    const token = tok.token || ''
+    if (!token) throw new Error('未拿到安装凭证')
+    const cmd = buildScoutInstallCommand({
+      version: ver,
+      token,
+      nexusUrl: tok.nexus_url || origin.value,
+      studioId: await resolveStudioIdForInstall(),
+      manifestUrl: manifestUrl.value,
+    })
+    await copyTextToClipboard(cmd)
+    ElMessage.success('已复制。请在执行机终端粘贴（凭证约 15 分钟有效，勿外传）。')
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '复制失败')
+  } finally {
+    copyingRemote.value = false
+  }
+}
+
 const updateLocal = async () => {
   const api = window.electronAPI
   if (typeof api?.scoutSetup !== 'function') {
@@ -637,6 +678,15 @@ onUnmounted(() => {
       <p v-if="setupJob.error && !setupInProgress" class="settings-page-desc install-warn">{{ setupJob.error }}</p>
       <div class="row-actions">
         <button
+          v-if="release?.version || latestVersion"
+          type="button"
+          class="settings-action-pill"
+          :disabled="copyingRemote || setupInProgress"
+          @click="copyRemoteInstall"
+        >
+          <span>{{ copyingRemote ? '生成中…' : '复制远程安装命令' }}</span>
+        </button>
+        <button
           v-if="canInstall && release?.url"
           type="button"
           class="settings-action-pill"
@@ -644,10 +694,10 @@ onUnmounted(() => {
           @click="updateLocal"
         >
           <el-icon><Download /></el-icon>
-          <span>{{ setupInProgress || updating ? setupProgressText : '从 GitHub 下载并安装' }}</span>
+          <span>{{ setupInProgress || updating ? setupProgressText : '本机：从 GitHub 下载并安装' }}</span>
         </button>
         <p v-else-if="release?.url" class="settings-page-desc">
-          当前是浏览器里的 Studio 页面，不能把 Scout 装到这台电脑。请在终端执行 <code>npm run dev</code>，在弹出的 Mino Studio 窗口里再点下载。
+          浏览器里不能装本机 Scout；请用「复制远程安装命令」在专机执行，或 <code>npm run dev</code> 打开桌面窗口。
         </p>
       </div>
     </section>
@@ -693,6 +743,13 @@ onUnmounted(() => {
             :disabled="!rowActions(localRow).restart.enabled || starting || stopping || restarting || remoteBusy || setupInProgress"
             @click="act(localRow, 'restart')"
           >{{ restarting ? '重启中…' : '重启' }}</button>
+          <button
+            v-if="latestVersion || release?.version"
+            type="button"
+            class="settings-action-pill"
+            :disabled="copyingRemote"
+            @click="copyRemoteInstall"
+          >{{ copyingRemote ? '…' : '复制远程安装命令' }}</button>
           <span
             v-if="isElectron && localInstalled && versionCheck === 'checking'"
             class="version-status"
