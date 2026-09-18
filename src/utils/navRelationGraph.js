@@ -416,6 +416,13 @@ export function inferNavDriver(meta = {}) {
   const at = String(meta.action_type || '').trim().toLowerCase()
   if (at === 'back') return 'system'
   if (at === 'tap' || at === 'tab' || at === 'swipe' || at === 'input') return 'manual'
+  const label = String(meta.action_label || '')
+  const low = label.toLowerCase()
+  if (label.includes('完成') || label.includes('自动') || label.includes('下载完成') || low.includes('auto')) {
+    return 'auto'
+  }
+  if (at === 'wait' || at === 'scroll' || at === 'launch') return 'auto'
+  if (String(meta.source || '') === 'screen_atlas' || Number(meta.count || 0) > 0) return 'manual'
   return 'unknown'
 }
 
@@ -441,7 +448,62 @@ export function formatArchNavLineText(rawLabel, driver, { jumpOnly = false } = {
 function driverDashType(driver) {
   const d = String(driver || '').trim().toLowerCase()
   if (d === 'auto' || d === 'system') return 4
+  if (d === 'unknown') return 3
   return undefined
+}
+
+/** 架构图连线筛选（左侧面板开关，默认全开）。 */
+export const DEFAULT_ARCH_LINE_FILTERS = {
+  blueSolid: true,
+  blueDash: true,
+  orangeSolid: true,
+  orangeDash: true,
+  back: true,
+  forward: true,
+}
+
+export function archNavLineFilterTags({ isRev, dashType, color, kind = 'nav' }) {
+  if (kind !== 'nav') return null
+  const dashed = dashType != null && Number(dashType) > 0
+  if (isRev) {
+    return { style: dashed ? 'orangeDash' : 'orangeSolid', direction: 'back' }
+  }
+  return { style: dashed ? 'blueDash' : 'blueSolid', direction: 'forward' }
+}
+
+export function archLineHiddenByFilters(line, filters = DEFAULT_ARCH_LINE_FILTERS) {
+  const tags = line?.data?.archFilter
+  if (!tags) return false
+  if (tags.direction === 'forward' && filters.forward === false) return true
+  if (tags.direction === 'back' && filters.back === false) return true
+  const styleMap = {
+    blueSolid: 'blueSolid',
+    blueDash: 'blueDash',
+    orangeSolid: 'orangeSolid',
+    orangeDash: 'orangeDash',
+  }
+  const key = styleMap[tags.style]
+  if (key && filters[key] === false) return true
+  return false
+}
+
+export function loadArchLineFilters(storageKey = 'mino.archLineFilters') {
+  try {
+    const raw = sessionStorage.getItem(storageKey)
+    if (!raw) return { ...DEFAULT_ARCH_LINE_FILTERS }
+    const parsed = JSON.parse(raw)
+    return { ...DEFAULT_ARCH_LINE_FILTERS, ...parsed }
+  } catch {
+    return { ...DEFAULT_ARCH_LINE_FILTERS }
+  }
+}
+
+export function saveArchLineFilters(filters, storageKey = 'mino.archLineFilters') {
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(filters))
+  } catch {
+    /* ignore quota */
+  }
 }
 
 /**
@@ -651,10 +713,16 @@ export function docToRelationGraph(doc, options = {}) {
   const lineKeys = new Set()
 
   let lineSeq = 0
+  const archEdgeKeys = new Set()
   const pushLine = (line) => {
     const f = String(line.from || '').trim()
     const t = String(line.to || '').trim()
     if (!f || !t || f === t) return
+    if (archMode && isAtlas) {
+      const pairKey = `${f}→${t}`
+      if (archEdgeKeys.has(pairKey)) return
+      archEdgeKeys.add(pairKey)
+    }
     const key = `${f}→${t}→${line.text || ''}→${line.fromType || ''}`
     if (lineKeys.has(key)) return
     lineKeys.add(key)
@@ -842,6 +910,9 @@ export function docToRelationGraph(doc, options = {}) {
       const rel = String(meta.transition?.relation || '')
       if (rel === 'intra') continue
     }
+    if (archMode && isAtlas && Boolean(meta.reverse) && !meta.observed_back) {
+      continue
+    }
     const eid = String(ed.id || '')
     if (eid.startsWith('edge.tab.')) continue
     const label = String(meta.action_label || meta.note || '进入').replace(/observed×\d+/, '进入')
@@ -865,6 +936,7 @@ export function docToRelationGraph(doc, options = {}) {
     const navColor = archMode ? (isRev ? '#c2410c' : '#1d4ed8') : isRev ? '#ea580c' : '#475569'
     const navWidth = archMode ? (isRev ? 2.5 : 3) : isRev ? 1.5 : 2
     const dash = driverDashType(driver)
+    const resolvedDash = isRev && !dash ? 4 : dash
     pushLine({
       from: lineFrom.from,
       to,
@@ -874,10 +946,18 @@ export function docToRelationGraph(doc, options = {}) {
       text: lineText,
       color: navColor,
       lineWidth: navWidth,
-      dashType: isRev && !dash ? 4 : dash,
+      dashType: resolvedDash,
       lineShape: archMode ? RG_LINE_SHAPE_CURVE : undefined,
       force_elastic: archMode ? 32 : undefined,
-      data: { edgeId: ed.id, manual: Boolean(meta.manual), driver, passiveAnchor },
+      data: {
+        edgeId: ed.id,
+        manual: Boolean(meta.manual),
+        driver,
+        passiveAnchor,
+        archFilter: archMode && isAtlas
+          ? archNavLineFilterTags({ isRev, dashType: resolvedDash, color: navColor, kind: 'nav' })
+          : null,
+      },
     })
   }
 
@@ -939,7 +1019,7 @@ export function docToRelationGraph(doc, options = {}) {
       return { ...n, x: Number(pos.x), y: Number(pos.y), fixed: true }
     })
     const shells = buildFlowBlockShellNodes(doc, layoutPosFinal, WF_W, WF_H, {
-      enabled: !(archMode && isAtlas),
+      enabled: true,
     })
     laidOutNodes = [...shells, ...laidOutNodes]
   } else if (archMode && isAtlas && !useFixed) {

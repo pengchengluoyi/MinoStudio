@@ -143,7 +143,14 @@ export function assignCasesToAtlas(atlas, cases = [], requirements = []) {
       if (c?.case_id) drafts.push({ ...c, requirement_id: req.id, _draft: true })
     }
   }
-  const pool = [...(cases || []), ...drafts]
+  const pool = []
+  const seen = new Set()
+  for (const c of [...(cases || []), ...drafts]) {
+    const id = String(c?.case_id || '').trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    pool.push(c)
+  }
   const rows = flattenAtlas(atlas).filter((row) => row.kind === 'feature').reverse()
 
   const take = (nodeId, pred) => {

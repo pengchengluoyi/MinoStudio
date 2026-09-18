@@ -864,11 +864,8 @@ const loadCases = async () => {
     if (pid) {
       try {
         const casesRes = await getProjectCases(pid)
-        const rows = casesRes?.data?.cases || []
-        if (rows.length) {
-          cases.value = casesFromProjectRows(rows)
-          return
-        }
+        cases.value = casesFromProjectRows(casesRes?.data?.cases || [])
+        return
       } catch (_) { /* 回落到流程草稿 */ }
     }
     const reqs = autoRes?.data?.automation?.qa_process?.requirements || []

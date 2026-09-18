@@ -7,12 +7,15 @@ import NavRelationGraphNode from '@/views/Testing/NavRelationGraphNode.vue'
 import NavGraphNodeHover from '@/views/Testing/NavGraphNodeHover.vue'
 import NavGraphInspectDialog from '@/views/Testing/NavGraphInspectDialog.vue'
 import {
+  archLineHiddenByFilters,
   docToRelationGraph,
   enrichArchLineArrows,
+  loadArchLineFilters,
   navEdgeFromLineJson,
   relationGraphOptions,
   RG_DEFAULT_LINE_MARKER,
   RG_LINE_SHAPE_CURVE,
+  saveArchLineFilters,
   stateId,
 } from '@/utils/navRelationGraph'
 import {
@@ -55,6 +58,40 @@ const atlasTurnRefs = computed(() => {
 const isArch = computed(() => props.variant === 'arch')
 const isPreview = computed(() => !isArch.value && props.mode === 'preview')
 const graphInstance = ref(null)
+const archLineFilters = ref(loadArchLineFilters())
+
+const archFilterRows = [
+  { key: 'blueSolid', label: '展示蓝-实线' },
+  { key: 'blueDash', label: '展示蓝-虚线' },
+  { key: 'orangeSolid', label: '展示橙-实线' },
+  { key: 'orangeDash', label: '展示橙-虚线' },
+  { key: 'back', label: '返回' },
+  { key: 'forward', label: '前进' },
+]
+
+const syncArchLineVisibility = () => {
+  if (!isArch.value) return
+  const gi = graphInstance.value
+  const inst = typeof gi?.getInstance === 'function' ? gi.getInstance() : gi
+  if (!inst) return
+  const filters = archLineFilters.value
+  const data = typeof inst.getGraphJsonData === 'function' ? inst.getGraphJsonData() : null
+  if (!data) return
+  for (const line of data.lines || []) {
+    if (!line?.data?.archFilter) continue
+    inst.updateLine(line.id, { hidden: archLineHiddenByFilters(line, filters) })
+  }
+  for (const line of data.fakeLines || []) {
+    if (!line?.data?.archFilter) continue
+    inst.updateFakeLine(line.id, { hidden: archLineHiddenByFilters(line, filters) })
+  }
+  if (typeof inst.refresh === 'function') inst.refresh()
+}
+
+const onArchFilterChange = () => {
+  saveArchLineFilters(archLineFilters.value)
+  syncArchLineVisibility()
+}
 const selectedKind = ref('state')
 const selectedStateId = ref('')
 const selectedEdgeId = ref('')
@@ -169,6 +206,8 @@ const loadGraph = async () => {
     if (inst && typeof inst.refresh === 'function') {
       inst.refresh()
     }
+    await nextTick()
+    syncArchLineVisibility()
     gi.moveToCenter()
     if (payload.useFlowBlockLayout) {
       if (typeof gi.zoomToFit === 'function') gi.zoomToFit()
@@ -504,6 +543,16 @@ const onLineBeCreated = async (lineInfo) => {
 
     <div class="graph-layout">
       <div class="graph-canvas-wrap">
+        <div v-if="isArch" class="arch-line-filter-panel" aria-label="架构图连线显示">
+          <div v-for="row in archFilterRows" :key="row.key" class="arch-filter-row">
+            <el-switch
+              v-model="archLineFilters[row.key]"
+              size="small"
+              @change="onArchFilterChange"
+            />
+            <span class="arch-filter-label">{{ row.label }}</span>
+          </div>
+        </div>
         <RGProvider>
           <div class="rg-host">
             <RelationGraph
@@ -610,6 +659,7 @@ const onLineBeCreated = async (lineInfo) => {
 }
 
 .graph-canvas-wrap {
+  position: relative;
   min-height: 0;
   height: 100%;
   border: 1px solid #e2e8f0;
@@ -670,6 +720,37 @@ const onLineBeCreated = async (lineInfo) => {
   width: 100%;
   height: 100%;
   min-height: 360px;
+}
+
+.arch-line-filter-panel {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  pointer-events: auto;
+  max-width: 168px;
+}
+
+.arch-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.2;
+}
+
+.arch-filter-label {
+  flex: 1;
+  user-select: none;
 }
 
 .graph-inspector {

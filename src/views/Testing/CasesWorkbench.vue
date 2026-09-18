@@ -118,8 +118,17 @@ const loadProjectCases = async () => {
   }
 }
 
+const dropDraftCases = (ids) => {
+  const drop = new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))
+  if (!drop.size) return
+  requirements.value = requirements.value.map((req) => ({
+    ...req,
+    draft_cases: (req.draft_cases || []).filter((c) => !drop.has(String(c?.case_id || ''))),
+  }))
+}
+
 const cases = computed(() => {
-  if (projectCases.value.length) return projectCases.value
+  if (props.projectId) return projectCases.value
   return generatedCasesFromProcess(requirements.value)
 })
 const layoutMode = ref('outline')
@@ -157,7 +166,8 @@ const onCoverImported = (data) => {
   if (data?.atlas === 'patch' || data?.atlas === 'pending') setView('atlas')
 }
 const onCaseImported = async () => {
-  await Promise.all([load(), loadProjectCases()])
+  await load()
+  await loadProjectCases()
   emit('cases-changed')
 }
 const wikiPublishing = ref(false)
@@ -221,7 +231,7 @@ const versionAtlas = computed(() => {
 const caseAssign = computed(() => assignCasesToAtlas(
   versionAtlas.value,
   cases.value,
-  projectCases.value.length ? [] : requirements.value,
+  props.projectId ? [] : requirements.value,
 ))
 
 const prevRelease = computed(() => previousRelease(releases.value, activeRelease.value))
@@ -342,6 +352,7 @@ const deleteLibraryCase = async (row) => {
     await deleteProjectCase(props.projectId, cid)
     ElMessage.success('已删除')
     libraryTableRef.value?.clearSelection?.()
+    dropDraftCases([cid])
     await loadProjectCases()
     emit('cases-changed')
   } catch (e) {
@@ -367,6 +378,7 @@ const deleteSelectedLibraryCases = async () => {
     const n = res?.data?.deleted ?? ids.length
     ElMessage.success(`已删除 ${n} 条`)
     libraryTableRef.value?.clearSelection?.()
+    dropDraftCases(ids)
     await loadProjectCases()
     emit('cases-changed')
   } catch (e) {
@@ -557,7 +569,8 @@ watch(versionOptions, (rows) => {
 }, { immediate: true })
 watch(() => props.appId, async () => {
   lastTick.value = ''
-  await Promise.all([load(), loadProjectCases()])
+  await load()
+  await loadProjectCases()
   await loadAliases()
 })
 
@@ -565,7 +578,8 @@ watch(() => props.projectId, () => { loadProjectCases() })
 
 onMounted(async () => {
   syncViewFromRoute()
-  await Promise.all([load(), loadProjectCases()])
+  await load()
+  await loadProjectCases()
   await loadAliases()
   if (!selectedReqId.value && requirements.value[0]) selectedReqId.value = requirements.value[0].id
 })

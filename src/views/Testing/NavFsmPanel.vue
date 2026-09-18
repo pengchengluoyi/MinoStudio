@@ -126,6 +126,7 @@ const liveSummary = computed(() => {
     trajSteps: Number(trajectory.value?.step_count || 0),
     localizeStates: Number(trajectory.value?.unique_states || 0),
     atlasMode: atlasMode.value,
+    cached: Boolean(liveGraphMeta.value?.cached),
   }
 })
 
@@ -169,6 +170,7 @@ const applyAtlas = async (payload, { forceRemount = false } = {}) => {
   liveGraphMeta.value = {
     synced: !exploreLive.value,
     source: payload.source || 'screen_atlas',
+    cached: Boolean(payload.cached),
     updated_at: payload.updated_at || 0,
     publish_error: '',
     screen_count: Number(payload.screen_count || 0),
@@ -190,13 +192,14 @@ const applyAtlas = async (payload, { forceRemount = false } = {}) => {
   }
 }
 
-const loadScreenAtlas = async (quiet = false) => {
+const loadScreenAtlas = async (quiet = false, rebuild = false) => {
   if (!quiet) liveLoading.value = true
   try {
     const res = await getNavScreenAtlas(props.appId, {
       project_id: props.projectId || undefined,
       nav_view_id: navViewId.value || undefined,
       app_version: atlasAppVersion.value || undefined,
+      rebuild: rebuild ? true : undefined,
     })
     const payload = res?.data || null
     await applyAtlas(payload, { forceRemount: !quiet })
@@ -237,7 +240,7 @@ const syncExploreStatus = async () => {
     if (exploreLive.value && props.section === 'arch') {
       await loadScreenAtlas(true)
     } else if (wasLive && !exploreLive.value && props.section === 'arch') {
-      await loadScreenAtlas(true)
+      await loadScreenAtlas(true, true)
     }
     if (!exploreLive.value) exploreRunId.value = ''
   } catch {
@@ -332,7 +335,7 @@ const onClearCaptures = async () => {
     graphReloadKey.value += 1
     await load()
     if (props.section === 'arch') {
-      await loadScreenAtlas(true)
+      await loadScreenAtlas(true, true)
     }
     ElMessage.success(n ? `已清空 ${n} 步采集` : '已清空')
   } catch (e) {
@@ -420,7 +423,7 @@ const onSaveGraphDoc = async () => {
   try {
     await save(body)
     ElMessage.success('导航图已保存')
-    await loadScreenAtlas(true)
+    await loadScreenAtlas(true, true)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
   }
@@ -471,7 +474,7 @@ const onMergeArchStates = async ({ canonicalId, mergeIds }) => {
       project_id: props.projectId || '',
     })
     ElMessage.success('已合并到当前页')
-    await loadScreenAtlas(true)
+    await loadScreenAtlas(true, true)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '合并失败')
   }
@@ -491,7 +494,7 @@ const onSplitCapture = async ({ sessionId, turnId }) => {
       project_id: props.projectId || '',
     })
     ElMessage.success('已标记拆分，正在刷新架构图…')
-    await loadScreenAtlas(true)
+    await loadScreenAtlas(true, true)
   } catch (e) {
     if (e === 'cancel' || e?.message === 'cancel') return
     ElMessage.error(e?.response?.data?.detail || e?.message || '拆分失败')
@@ -508,7 +511,7 @@ const onPinCapture = async ({ sessionId, turnId, stateId }) => {
       project_id: props.projectId || '',
     })
     ElMessage.success('已钉到当前页')
-    await loadScreenAtlas(true)
+    await loadScreenAtlas(true, true)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '钉死失败')
   }
@@ -610,6 +613,7 @@ onUnmounted(() => {
               <template v-if="liveSummary.atlasMode">
                 {{ liveSummary.stateCount }} 屏 · {{ liveSummary.edgeCount }} 转移
                 · {{ captureTurns }} 步采集 · {{ formatTime(liveSummary.updatedAt) }}
+                <template v-if="liveSummary.cached"> · 快照</template>
               </template>
               <template v-else>
                 {{ liveSummary.stateCount }} 页 · {{ liveSummary.entryCount }} Tab · {{ liveSummary.subPageCount }} 子页
@@ -662,7 +666,9 @@ onUnmounted(() => {
               clearable
               @change="loadScreenAtlas(true)"
             />
-            <el-button size="small" :loading="liveLoading" @click="loadScreenAtlas()">刷新</el-button>
+            <el-button size="small" :loading="liveLoading" @click="loadScreenAtlas(false, true)">
+              重新计算
+            </el-button>
           </div>
         </div>
         <div class="graph-view-tabs">

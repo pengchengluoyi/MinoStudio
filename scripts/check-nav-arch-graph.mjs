@@ -8,7 +8,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const fixture = join(root, '../MinoNexus/tests/fixtures/nav_atlas_arch_golden.json')
 const graphPath = pathToFileURL(join(root, 'src/utils/navRelationGraph.js')).href
 
-const { docToRelationGraph, RG_TARGET_CONNECT, RG_TARGET_NODE } = await import(graphPath)
+const {
+  docToRelationGraph,
+  RG_TARGET_CONNECT,
+  RG_TARGET_NODE,
+  archLineHiddenByFilters,
+  DEFAULT_ARCH_LINE_FILTERS,
+} = await import(graphPath)
 const doc = JSON.parse(readFileSync(fixture, 'utf8'))
 const g = docToRelationGraph(doc, { variant: 'arch', archView: 'structure', showWireframe: true })
 const fake = g.fakeLines || []
@@ -54,6 +60,38 @@ if (autoLine.fromType !== RG_TARGET_NODE || !autoLine.data?.passiveAnchor) {
 }
 if (autoLine.showEndArrow === false) {
   console.error('auto nav should showEndArrow')
+  process.exit(1)
+}
+
+const unkDoc = JSON.parse(JSON.stringify(doc))
+unkDoc.edges = [
+  ...(unkDoc.edges || []),
+  {
+    id: 'e-unk-test',
+    kind: 'nav',
+    from: 'page.login',
+    to: 'page.home',
+    meta: { action_label: '未知跳转', action_type: 'observe' },
+  },
+]
+const gUnk = docToRelationGraph(unkDoc, { variant: 'arch', archView: 'structure', showWireframe: true })
+const unkLine = [...(gUnk.fakeLines || []), ...(gUnk.lines || [])].find(
+  (l) => l.data?.edgeId === 'e-unk-test',
+)
+if (!unkLine || unkLine.dashType !== 3) {
+  console.error('unknown driver should use fine dash (3)', unkLine)
+  process.exit(1)
+}
+
+const sampleLine = {
+  data: { archFilter: { style: 'blueSolid', direction: 'forward' } },
+}
+if (!archLineHiddenByFilters(sampleLine, { ...DEFAULT_ARCH_LINE_FILTERS, blueSolid: false })) {
+  console.error('archLineHiddenByFilters should hide blueSolid when off')
+  process.exit(1)
+}
+if (archLineHiddenByFilters(sampleLine, DEFAULT_ARCH_LINE_FILTERS)) {
+  console.error('archLineHiddenByFilters should show when filters on')
   process.exit(1)
 }
 
