@@ -9,6 +9,7 @@
 */
 
 const SCOUT_LAYERS = ['runtime', 'app', 'browser']
+const BOOTSTRAP_LAYERS = ['runtime', 'app']
 
 /** 解析 <bin>/layers.txt：`<层> <指纹>` 两列，`#` 开头是注释。没有内容返回 null。 */
 const parseLayersTxt = (text) => {
@@ -45,8 +46,33 @@ const planScoutUpdate = (item = {}, installed = null) => {
 
   const layers = item.layers && typeof item.layers === 'object' ? item.layers : null
   if (!layers) return combined('manifest 没有分层字段（旧版发布）')
-  // runtime 指纹是"这台机器装过分层包"的判据。没有它就没法做增量比对。
-  if (!installed || !installed.runtime) return combined('本机没有分层安装记录，需要全量')
+  // 首次安装：只拉 runtime+app；Chromium 由 Scout 启动后后台装。
+  if (!installed || !installed.runtime) {
+    const steps = []
+    for (const name of BOOTSTRAP_LAYERS) {
+      const layer = layers[name]
+      if (!layer || !layer.url) continue
+      if (installed && installed[name] && installed[name] === layer.key) continue
+      steps.push({
+        layer: name,
+        key: String(layer.key || ''),
+        url: String(layer.url),
+        sha256: String(layer.sha256 || ''),
+        filename: String(layer.filename || ''),
+        bytes: Number(layer.bytes) || 0,
+      })
+    }
+    if (!steps.length) {
+      return { mode: 'up-to-date', reason: 'runtime+app 已就绪', bytes: 0, steps: [] }
+    }
+    const bytes = steps.reduce((n, s) => n + s.bytes, 0)
+    return {
+      mode: 'layers',
+      reason: '首次安装：runtime+app',
+      bytes,
+      steps,
+    }
+  }
 
   const steps = []
   for (const name of SCOUT_LAYERS) {

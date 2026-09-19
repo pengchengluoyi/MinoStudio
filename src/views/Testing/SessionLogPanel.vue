@@ -51,6 +51,15 @@ const listStatus = ref('')
 
 const sessionId = computed(() => String(sessionInput.value || '').trim())
 
+const EVENT_TYPE_LABEL = {
+  'resource/transition': '资源转移',
+  'session/start': '会话开始',
+  'session/end': '会话结束',
+  'stream/emit': '流式步骤',
+}
+
+const eventTypeLabel = (t) => EVENT_TYPE_LABEL[t] || t
+
 const typeOptions = computed(() => {
   const set = new Set((events.value || []).map((e) => e.type).filter(Boolean))
   return [...set].sort()
@@ -376,7 +385,7 @@ onMounted(() => {
           <h3>Events</h3>
           <div class="col-actions">
             <el-select v-model="typeFilter" size="small" clearable placeholder="类型" class="filter-item">
-              <el-option v-for="t in typeOptions" :key="t" :label="t" :value="t" />
+              <el-option v-for="t in typeOptions" :key="t" :label="eventTypeLabel(t)" :value="t" />
             </el-select>
             <el-radio-group v-model="panel" size="small">
               <el-radio-button value="events">事件</el-radio-button>
@@ -396,7 +405,9 @@ onMounted(() => {
             @row-click="selectEvent"
           >
             <el-table-column prop="seq" label="#" width="56" />
-            <el-table-column prop="type" label="type" width="140" show-overflow-tooltip />
+            <el-table-column label="type" width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ eventTypeLabel(row.type) }}</template>
+            </el-table-column>
             <el-table-column prop="turn" label="turn" width="56" />
             <el-table-column prop="phase" label="phase" width="72" />
             <el-table-column label="payload" min-width="240" show-overflow-tooltip>

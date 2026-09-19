@@ -10,6 +10,19 @@ export const updateProjectCase = (projectId, caseId, data) =>
     data,
   })
 
+export const compileCaseResourceKey = (projectId, caseId) =>
+  request({
+    url: `/project/${projectId}/cases/${encodeURIComponent(caseId)}/resource-key/compile`,
+    method: 'post',
+  })
+
+export const previewResourceKey = (projectId, { precondition = '', platform = 'android', package_id = '', env = 'test' } = {}) =>
+  request({
+    url: `/project/${projectId}/resource-key/preview`,
+    method: 'post',
+    data: { precondition, platform, package_id, env },
+  })
+
 export const listProjectRequirements = (projectId) =>
   request({ url: `/project/${projectId}/requirements`, method: 'get' })
 

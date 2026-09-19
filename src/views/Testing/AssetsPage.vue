@@ -6,7 +6,8 @@ import {
   getProjectAccounts,
   getProjectAccountPoolSchema,
   getProjectAccountPoolTemplates,
-  pickProjectAccounts,
+  trialProjectResources,
+  getProjectDeviceAppSessions,
   createProjectAccount,
   deleteProjectAccount,
   patchProjectAccount,
@@ -36,22 +37,28 @@ defineOptions({ name: 'AssetsPage' })
 const props = defineProps({
   projectId: { type: String, default: '' },
   projectName: { type: String, default: '' },
+  appId: { type: String, default: '' },
   hideNav: { type: Boolean, default: false },
   section: { type: String, default: '' },
 })
 
 const TABS = [
   { id: 'accounts', label: '账号管理', desc: '号池状态与租约' },
-  { id: 'trial', label: '试筛账号', desc: '模拟用例前置选号' },
+  { id: 'trial', label: '试筛资源', desc: '前置 → Claim + 选号 + 机态缺口' },
+  { id: 'device-apps', label: '机态 App', desc: '设备 × 包名登录登记' },
 ]
 
-const tab = ref(props.section === 'trial' ? 'trial' : 'accounts')
+const tab = ref(
+  props.section === 'trial' || props.section === 'device-apps' ? props.section : 'accounts',
+)
 const pageTitle = computed(() => {
   if (!props.hideNav) return '测试资源'
-  return tab.value === 'trial' ? '试筛账号' : '账号管理'
+  if (tab.value === 'trial') return '试筛资源'
+  if (tab.value === 'device-apps') return '机态 App'
+  return '账号管理'
 })
 watch(() => props.section, (s) => {
-  if (s === 'trial' || s === 'accounts') tab.value = s
+  if (s === 'trial' || s === 'accounts' || s === 'device-apps') tab.value = s
 })
 
 const loading = ref(false)
@@ -68,6 +75,12 @@ const trialEnv = ref('')
 const prompt = ref('')
 const ranked = ref([])
 const pickRequirements = ref(null)
+const trialSn = ref('')
+const trialPackage = ref('')
+const deviceAppGaps = ref([])
+const trialPackageResolved = ref('')
+const deviceSessions = ref([])
+const deviceSnFilter = ref('')
 const dialogOpen = ref(false)
 const poolLocalOpen = ref(false)
 const editingId = ref('')
@@ -277,18 +290,40 @@ const runTrial = async () => {
   picking.value = true
   ranked.value = []
   pickRequirements.value = null
+  deviceAppGaps.value = []
+  trialPackageResolved.value = ''
   try {
-    const res = await pickProjectAccounts(props.projectId, {
+    const res = await trialProjectResources(props.projectId, {
       prompt: prompt.value,
       env: trialEnv.value,
+      sn: trialSn.value.trim(),
+      package_id: trialPackage.value.trim(),
     })
     ranked.value = res?.data?.accounts || []
     pickRequirements.value = res?.data?.requirements || null
+    deviceAppGaps.value = res?.data?.device_app_gaps || []
+    trialPackageResolved.value = res?.data?.package_id || ''
     if (!ranked.value.length) ElMessage.info('没有满足条件的账号')
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '筛选失败')
   } finally {
     picking.value = false
+  }
+}
+
+const loadDeviceSessions = async () => {
+  if (!props.projectId) return
+  loading.value = true
+  try {
+    const res = await getProjectDeviceAppSessions(props.projectId, {
+      sn: deviceSnFilter.value.trim(),
+      app_id: props.appId || undefined,
+    })
+    deviceSessions.value = res?.data?.sessions || []
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载失败')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -300,8 +335,12 @@ watch(
   () => props.section,
   (s) => {
     if (s === 'accounts' || s === '') load()
+    if (s === 'device-apps') loadDeviceSessions()
   },
 )
+watch(tab, (t) => {
+  if (t === 'device-apps') loadDeviceSessions()
+})
 onMounted(load)
 onActivated(load)
 </script>
@@ -427,25 +466,31 @@ onActivated(load)
       </section>
     </template>
 
-    <template v-else>
+    <template v-else-if="tab === 'trial'">
       <section class="settings-card trial-hint">
-        <p>输入与<strong>用例前置</strong>相同的一句话；系统会从文案推断业务模板并选号（无需手选模板）。</p>
+        <p>输入与<strong>用例前置</strong>相同的编号行；返回 Claim 编译约束、首选账号与机态缺口（填 SN 时）。</p>
       </section>
       <section class="settings-card pick-card">
         <div class="pick-row">
           <el-select v-model="trialEnv" placeholder="环境" clearable style="width: 110px">
             <el-option v-for="e in environments" :key="e.key" :label="e.label" :value="e.key" />
           </el-select>
-          <el-input v-model="prompt" placeholder="有购物车的老用户，已登录" @keyup.enter="runTrial" />
+          <el-input v-model="trialSn" placeholder="设备 SN（可选）" style="max-width: 140px" />
+          <el-input v-model="trialPackage" placeholder="包名（可选）" style="max-width: 160px" />
+          <el-input v-model="prompt" placeholder="1. 登录态：未登录 …" @keyup.enter="runTrial" />
           <el-button type="primary" :loading="picking" @click="runTrial">试筛</el-button>
         </div>
         <p v-if="pickRequirements?.all?.length" class="filter-hint pick-req-hint">
           编译约束：
           <code>{{ (pickRequirements.all || []).map((c) => `${c.facet} ${c.op} ${c.value}`).join(' · ') }}</code>
         </p>
+        <p v-if="trialPackageResolved" class="filter-hint">包名：{{ trialPackageResolved }}</p>
+        <ul v-if="deviceAppGaps.length" class="gap-list">
+          <li v-for="(g, i) in deviceAppGaps" :key="i">{{ g }}</li>
+        </ul>
       </section>
 
-      <section v-if="chosen" class="settings-card chosen-card">
+      <section v-if="tab === 'trial' && chosen" class="settings-card chosen-card">
         <div class="chosen-grid">
           <div>
             <div class="settings-kicker">系统将首选</div>
@@ -488,6 +533,33 @@ onActivated(load)
               <span class="hit">{{ row.reason || '—' }}</span>
             </template>
           </el-table-column>
+        </el-table>
+      </section>
+    </template>
+
+    <template v-else-if="tab === 'device-apps'">
+      <section class="settings-card pick-card">
+        <div class="pick-row">
+          <el-input v-model="deviceSnFilter" placeholder="按 SN 过滤" clearable style="max-width: 200px" />
+          <el-button @click="loadDeviceSessions">刷新</el-button>
+        </div>
+        <p class="filter-hint">跑批清缓存 / inspect / 登录流块会写入登记簿；可在此核对机态。</p>
+      </section>
+      <section class="settings-table-card is-fill">
+        <el-table :data="deviceSessions" size="small" border stripe height="100%" empty-text="无设备或未配置被测 App 包名">
+          <el-table-column prop="sn" label="SN" width="140" show-overflow-tooltip />
+          <el-table-column prop="device_label" label="设备" width="120" show-overflow-tooltip />
+          <el-table-column prop="package_id" label="包名" min-width="160" show-overflow-tooltip />
+          <el-table-column label="登记" width="72" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.registered ? 'success' : 'info'" size="small">{{ row.registered ? '已观测' : '占位' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="session" label="会话" width="100" />
+          <el-table-column prop="bound_account_id" label="绑定账号" width="120" show-overflow-tooltip />
+          <el-table-column prop="app_version" label="版本" width="88" />
+          <el-table-column prop="identity_hint" label="身份摘要" min-width="120" show-overflow-tooltip />
+          <el-table-column prop="observed_at" label="观测时间" width="160" />
         </el-table>
       </section>
     </template>
@@ -677,6 +749,13 @@ onActivated(load)
   font-size: 12px;
   color: #9ca3af;
 }
+.gap-list {
+  margin: 8px 0 0;
+  padding-left: 1.2em;
+  font-size: 12px;
+  color: var(--el-color-warning);
+}
+
 .trial-hint p {
   margin: 0;
   font-size: 13px;

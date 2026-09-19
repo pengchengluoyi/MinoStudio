@@ -13,6 +13,7 @@ import CaseImportDialog from '@/views/Testing/CaseImportDialog.vue'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import CasePairedEditor from '@/components/CasePairedEditor.vue'
+import CaseResourceKeyPreview from '@/components/CaseResourceKeyPreview.vue'
 import WikiHistoryDialog from '@/views/Testing/WikiHistoryDialog.vue'
 import { suiteCaseIds } from '@/utils/caseLibrary'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
@@ -1997,6 +1998,12 @@ watch(() => props.projectId, loadEnvSnap)
                         :row="row"
                         :editable="!row.locked"
                         @change="(fields) => onDraftCaseChange(row, fields)"
+                      />
+                      <CaseResourceKeyPreview
+                        v-if="projectId"
+                        :project-id="projectId"
+                        :precondition="row.precondition || row.precondition_raw || ''"
+                        :platform="row.platform || 'android'"
                       />
                     </div>
                   </template>

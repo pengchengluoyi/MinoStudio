@@ -280,6 +280,18 @@ function applyAgentEvent(d) {
     })
     if (d.step) activeStep.value = d.step
   }
+  else if (d.phase === 'resource') {
+    const rt = d.resource_transition && typeof d.resource_transition === 'object' ? d.resource_transition : {}
+    upsert(d.step || steps.value.length + 1, {
+      cap: d.capability_id || 'resource_transition',
+      status: 'pass',
+      result_status: 'pass',
+      summary: d.summary || '',
+      resource_transition: rt,
+      lane: 'resource',
+      elapsed: 1,
+    })
+  }
   else if (d.phase === 'recovery') {
     // L0 系统层恢复：把「本步命中了哪些 pack」挂到该步上，供调试溯源
     const ruleId = d.recovery?.rule_id
@@ -390,9 +402,8 @@ async function backfill(runId) {
   if (!runId) return
   let usedAgent = false
   let caseElapsed = 0
+  // 仅按本条 report_run_id 拉轨迹；禁止回退到 batch run_id（会把同批其它 case 的胶片贴到当前用例）
   const ids = [runId]
-  const batch = String(runId).includes('::') ? String(runId).split('::')[0] : ''
-  if (batch && batch !== runId) ids.push(batch)
   for (const id of ids) {
     try {
       let res = await getSessionTrajectory(id)
@@ -1023,7 +1034,7 @@ defineExpose({ goal, overall, finished })
                   v-for="s in cardsOf(task)"
                   :key="s.step"
                   class="et-step"
-                  :class="{ active: s.step === activeStep }"
+                  :class="{ active: s.step === activeStep, 'lane-resource': s.lane === 'resource' }"
                   :data-step="s.step"
                   @click="openStepDetailDrawer(s.step)"
                 >
@@ -1098,7 +1109,7 @@ defineExpose({ goal, overall, finished })
             v-for="s in steps"
             :key="s.step"
             class="et-step"
-            :class="{ active: s.step === activeStep }"
+            :class="{ active: s.step === activeStep, 'lane-resource': s.lane === 'resource' }"
             :data-step="s.step"
             @click="openStepDetailDrawer(s.step)"
           >
@@ -1769,6 +1780,10 @@ defineExpose({ goal, overall, finished })
   box-sizing: border-box;
 }
 .et-step.active { border-color: #a5b4fc; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12); }
+.et-step.lane-resource {
+  border-left: 3px solid #0ea5e9;
+  background: linear-gradient(90deg, #f0f9ff 0%, #fff 48%);
+}
 .et-idx { font-size: 12px; color: #9ca3af; font-weight: 600; min-width: 26px; }
 .et-thumb-btn {
   padding: 0;

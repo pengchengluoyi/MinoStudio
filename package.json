@@ -1,7 +1,7 @@
 {
   "name": "mino-studio",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "main": "dist-electron/main.js",
   "description": "Mino Studio — desktop testing workbench",
   "author": "pengchengluoyi@126.com",

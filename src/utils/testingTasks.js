@@ -60,6 +60,8 @@ const CAPABILITY_LABEL = {
   human_choice_multiple: '请人多选',
   human_upload_image: '请人传图',
   clear_app_cache: '清缓存',
+  resource_transition: '资源转移',
+  resource_claim_gate: '资源门槛',
   set_clipboard: '写剪贴板',
   wake_screen: '亮屏',
   dismiss_keyguard: '解锁',
@@ -701,6 +703,16 @@ export function applyTestingTaskEvent(task, data) {
     })
     if (i >= 0) next.cases[i] = { ...next.cases[i], ...row }
     else next.cases.push(row)
+  }
+  if (data.event === 'case_resource' && data.case_id && data.resource_card) {
+    const i = next.cases.findIndex((c) => {
+      if (c.case_id !== data.case_id) return false
+      if (data.sn) return c.sn === data.sn
+      return true
+    })
+    if (i >= 0) {
+      next.cases[i] = { ...next.cases[i], resource_card: data.resource_card }
+    }
   }
   if (data.event === 'hitl' && data.case?.case_id) {
     const i = next.cases.findIndex((c) => {

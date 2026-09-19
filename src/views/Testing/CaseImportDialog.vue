@@ -398,7 +398,10 @@ const submit = async () => {
               <td><el-checkbox v-model="row.selected" /></td>
               <td>{{ row.case_id || '（系统生成）' }}</td>
               <td>{{ row.name }}</td>
-              <td><pre class="cell-pre">{{ row.precondition_preview }}</pre></td>
+              <td>
+                <pre class="cell-pre">{{ row.precondition_preview }}</pre>
+                <span v-if="row.resource_claim_summary" class="claim-sum">{{ row.resource_claim_summary }}</span>
+              </td>
               <td><pre class="cell-pre">{{ row.steps_preview }}</pre></td>
               <td><pre class="cell-pre">{{ row.expected_preview }}</pre></td>
               <td class="flag-cell">
@@ -531,6 +534,12 @@ const submit = async () => {
   font-size: 12px;
   max-height: 72px;
   overflow: hidden;
+}
+.claim-sum {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #5b21b6;
 }
 .flag-cell { min-width: 100px; }
 .flag-tag {

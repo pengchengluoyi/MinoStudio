@@ -136,6 +136,35 @@ const pagedRailCases = computed(() => slicePage(railCases.value, casePage.value,
 const failedCases = computed(() => (task.value?.cases || []).filter(isProductFailRow))
 const execReport = computed(() => buildExecReport(task.value?.cases || []))
 const runContext = computed(() => taskRunContext(task.value))
+const taskResourceCard = computed(() => {
+  const cases = task.value?.cases || []
+  const pick = selectedCase.value
+  if (pick?.resource_card && typeof pick.resource_card === 'object') return pick.resource_card
+  for (let i = cases.length - 1; i >= 0; i -= 1) {
+    const rc = cases[i]?.resource_card
+    if (rc && typeof rc === 'object') return rc
+  }
+  return null
+})
+const resourceCardRows = computed(() => {
+  const card = taskResourceCard.value
+  if (!card) return []
+  const claim = card.claim || {}
+  const reg = card.registry || {}
+  const leases = card.leases || {}
+  const rows = [
+    { k: '设备', v: card.sn || '—' },
+    { k: '包名', v: card.package_id || '—' },
+    { k: '平台', v: platformLabel(card.platform) || card.platform || '—' },
+    { k: '要求机态', v: claim.required_session || 'any' },
+    { k: '登记簿机态', v: reg.session || 'unknown' },
+  ]
+  if (leases.account?.account_id) rows.push({ k: '账号租约', v: leases.account.login || leases.account.account_id })
+  if (leases.device?.run_id) rows.push({ k: '设备租约', v: `run ${String(leases.device.run_id).slice(0, 12)}` })
+  const gaps = Array.isArray(card.preflight_gaps) ? card.preflight_gaps : []
+  if (gaps.length) rows.push({ k: '预检提示', v: gaps.join('；') })
+  return rows
+})
 const cannotKindTag = (row) => {
   if (row?.kind === 'UNVERIFIABLE') return 'info'
   if (row?.kind === 'UNSUPPORTED') return 'warning'
@@ -1020,6 +1049,14 @@ const saveReview = async () => {
               </span>
             </div>
             <p v-if="runContext.note" class="ctx-note">{{ runContext.note }}</p>
+          </section>
+          <section v-if="resourceCardRows.length" class="settings-info-card report-ctx">
+            <div class="settings-kicker">测试资源卡</div>
+            <div class="report-ctx-chips">
+              <span v-for="row in resourceCardRows" :key="row.k">
+                <em>{{ row.k }}</em>{{ row.v }}
+              </span>
+            </div>
           </section>
           <p class="signoff-note">
             通过＝当前屏检测成立。失败＝检测了但没过，才可能是产品红。不可做＝认不出 / 动作表外 / 这句看不了。还没测到＝红了就停或没轮到。

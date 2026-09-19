@@ -137,7 +137,8 @@ const TESTING_NAV = [
     color: '#8b5cf6',
     children: [
       { id: 'accounts', label: '账号管理' },
-      { id: 'trial', label: '试筛账号' },
+      { id: 'trial', label: '试筛资源' },
+      { id: 'device-apps', label: '机态 App' },
     ],
   },
   {
@@ -1468,7 +1469,7 @@ watch(selectedCaseIds, () => {
       </div>
 
       <div v-else-if="tab === 'assets'" class="ws-config fill">
-        <AssetsPage hide-nav :project-id="projectId" :project-name="projectName" :section="activeSub" />
+        <AssetsPage hide-nav :project-id="projectId" :project-name="projectName" :app-id="appId" :section="activeSub" />
       </div>
 
       <div v-else class="ws-config">

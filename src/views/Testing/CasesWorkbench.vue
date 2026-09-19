@@ -22,6 +22,7 @@ import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import CaseMultilineCell from '@/components/CaseMultilineCell.vue'
 import CaseAlignedFieldCell from '@/components/CaseAlignedFieldCell.vue'
 import CasePairedEditor from '@/components/CasePairedEditor.vue'
+import CaseResourceKeyPanel from '@/components/CaseResourceKeyPanel.vue'
 import AtlasBoardView from '@/views/Testing/AtlasBoardView.vue'
 import AtlasChangeReview from '@/views/Testing/AtlasChangeReview.vue'
 import CoverImportDialog from '@/views/Testing/CoverImportDialog.vue'
@@ -316,17 +317,28 @@ watch([casePage, casePageSize, caseQuery, filterPath], () => {
   libraryTableRef.value?.clearSelection?.()
 })
 
+const mergeSavedCase = (cid, patch) => {
+  projectCases.value = projectCases.value.map((c) => (
+    String(c.case_id) === cid ? { ...c, ...patch } : c
+  ))
+}
+
 const onLibraryCaseChange = async (row, fields) => {
   const cid = String(row?.case_id || '').trim()
   if (!cid || !props.projectId) return
   try {
-    await updateProjectCase(props.projectId, cid, fields)
-    projectCases.value = projectCases.value.map((c) => (
-      String(c.case_id) === cid ? { ...c, ...fields } : c
-    ))
+    const res = await updateProjectCase(props.projectId, cid, fields)
+    const saved = res?.data?.case || { ...row, ...fields }
+    mergeSavedCase(cid, saved)
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
   }
+}
+
+const onLibraryResourceKeySaved = (row, saved) => {
+  const cid = String(row?.case_id || '').trim()
+  if (!cid) return
+  mergeSavedCase(cid, saved)
 }
 
 const sourceLabel = (row) => {
@@ -728,6 +740,11 @@ onMounted(async () => {
               <template #default="{ row }">
                 <div class="lib-case-expand">
                   <CasePairedEditor :row="row" @change="(fields) => onLibraryCaseChange(row, fields)" />
+                  <CaseResourceKeyPanel
+                    :row="row"
+                    :project-id="projectId"
+                    @saved="(saved) => onLibraryResourceKeySaved(row, saved)"
+                  />
                 </div>
               </template>
             </el-table-column>
@@ -743,6 +760,14 @@ onMounted(async () => {
             <el-table-column label="前置条件" min-width="140">
               <template #default="{ row }">
                 <CaseMultilineCell :row="row" raw-key="precondition" />
+              </template>
+            </el-table-column>
+            <el-table-column label="密钥" width="88" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="row.resource_key" class="rk-pill">
+                  {{ row.case_scene?.required_session || 'claim' }}
+                </span>
+                <span v-else class="muted">未编译</span>
               </template>
             </el-table-column>
             <el-table-column label="测试步骤" min-width="180">
@@ -1069,6 +1094,16 @@ onMounted(async () => {
 }
 .lib-case-expand {
   padding: 8px 12px 12px;
+}
+
+.rk-pill {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 4px;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 .library-wrap :deep(.el-table td.el-table__cell) {

@@ -135,6 +135,22 @@ export const pickProjectAccounts = (projectId, { prompt = '', env = '', surface 
     })
 }
 
+export const trialProjectResources = (projectId, { prompt = '', env = 'test', sn = '', package_id = '', app_id = '' } = {}) => {
+    return request({
+        url: `/project/${projectId}/resource-trial`,
+        method: 'post',
+        data: { prompt, env, sn, package_id, app_id },
+    })
+}
+
+export const getProjectDeviceAppSessions = (projectId, { sn = '', package_id = '', app_id = '', limit = 500 } = {}) => {
+    return request({
+        url: `/project/${projectId}/device-app-sessions`,
+        method: 'get',
+        params: { sn, package_id, app_id, limit },
+    })
+}
+
 export const getProjectAccountPoolTemplates = (projectId) => {
     return request({
         url: `/project/${projectId}/account-pool-templates`,
