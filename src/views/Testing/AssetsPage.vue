@@ -11,6 +11,11 @@ import {
   createProjectAccount,
   deleteProjectAccount,
   patchProjectAccount,
+  previewProjectAccountsImport,
+  commitProjectAccountsImport,
+  previewProjectAccountsImportFile,
+  commitProjectAccountsImportFile,
+  downloadProjectAccountsImportTemplate,
 } from '@/api/workReport'
 import TestAccountLeaseBadge from '@/components/TestAccountLeaseBadge.vue'
 import TestAccountStatus from '@/components/TestAccountStatus.vue'
@@ -30,6 +35,7 @@ import {
   templateFieldDefsForRow,
   templateFieldsForTemplate,
 } from '@/utils/testAccountFacets'
+import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import '@/views/Settings/settings-ui.css'
 
 defineOptions({ name: 'AssetsPage' })
@@ -83,6 +89,21 @@ const deviceSessions = ref([])
 const deviceSnFilter = ref('')
 const dialogOpen = ref(false)
 const poolLocalOpen = ref(false)
+const importOpen = ref(false)
+const importText = ref('')
+const importDup = ref('merge')
+const importPreview = ref(null)
+const importPreviewing = ref(false)
+const importCommitting = ref(false)
+const importMode = ref('paste')
+const importFile = ref(null)
+
+const IMPORT_SAMPLE = `手机号,展示名,登录态,备注
+13800000001,测试账号A,logged_out,
+13800000002,测试账号B,guest,批量导入示例`
+
+const importStats = computed(() => importPreview.value?.stats || {})
+const importPreviewRows = computed(() => importPreview.value?.preview || [])
 const editingId = ref('')
 const form = ref(emptyForm())
 const pwdOpen = ref(new Set())
@@ -140,6 +161,46 @@ const visibleRows = computed(() => {
   })
 })
 
+const accountPage = ref(1)
+const accountPageSize = ref(20)
+const pagedAccountRows = computed(() =>
+  slicePage(visibleRows.value, accountPage.value, accountPageSize.value),
+)
+
+const trialPage = ref(1)
+const trialPageSize = ref(20)
+const pagedRanked = computed(() => slicePage(ranked.value, trialPage.value, trialPageSize.value))
+
+const devicePage = ref(1)
+const devicePageSize = ref(20)
+const pagedDeviceSessions = computed(() =>
+  slicePage(deviceSessions.value, devicePage.value, devicePageSize.value),
+)
+
+const importPreviewPage = ref(1)
+const importPreviewPageSize = ref(10)
+const pagedImportPreviewRows = computed(() =>
+  slicePage(importPreviewRows.value, importPreviewPage.value, importPreviewPageSize.value),
+)
+
+const isTopRankedRow = (row) => {
+  const top = ranked.value[0]
+  return top && String(top.id) === String(row.id)
+}
+
+watch([search, envFilter, leaseFilter], () => {
+  accountPage.value = 1
+})
+watch(ranked, () => {
+  trialPage.value = 1
+})
+watch(deviceSessions, () => {
+  devicePage.value = 1
+})
+watch(importPreviewRows, () => {
+  importPreviewPage.value = 1
+})
+
 const formFieldDefs = computed(() => extensionFieldDefs(poolFieldDefs.value))
 const projectExtensionDefs = computed(() =>
   projectOnlyFieldDefs(poolFieldDefs.value, poolTemplates.value),
@@ -175,6 +236,123 @@ const load = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const openImport = () => {
+  importText.value = ''
+  importPreview.value = null
+  importDup.value = 'merge'
+  importMode.value = 'paste'
+  importFile.value = null
+  importOpen.value = true
+}
+
+const onImportFileChange = (uploadFile) => {
+  const raw = uploadFile?.raw
+  if (!raw) return
+  importFile.value = raw
+  importPreview.value = null
+}
+
+const buildImportFormData = () => {
+  const fd = new FormData()
+  fd.append('file', importFile.value)
+  fd.append('default_env', envFilter.value || 'test')
+  fd.append('on_duplicate', importDup.value)
+  return fd
+}
+
+const downloadImportTemplate = async () => {
+  if (!props.projectId) return
+  try {
+    const blob = await downloadProjectAccountsImportTemplate(props.projectId)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'account-import-template.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '下载失败')
+  }
+}
+
+const fillImportSample = () => {
+  importText.value = IMPORT_SAMPLE
+  importPreview.value = null
+}
+
+const runImportPreview = async () => {
+  if (importMode.value === 'file') {
+    if (!importFile.value) {
+      ElMessage.warning('请选择 .csv / .xlsx 文件')
+      return
+    }
+  } else if (!importText.value.trim()) {
+    ElMessage.warning('请粘贴 CSV/TSV 表格（首行为表头）')
+    return
+  }
+  importPreviewing.value = true
+  try {
+    const res =
+      importMode.value === 'file'
+        ? await previewProjectAccountsImportFile(props.projectId, buildImportFormData())
+        : await previewProjectAccountsImport(props.projectId, {
+            text: importText.value,
+            default_env: envFilter.value || 'test',
+            on_duplicate: importDup.value,
+          })
+    importPreview.value = res?.data || null
+    if (!importPreview.value?.ok) {
+      ElMessage.error(importPreview.value?.error || '预览失败')
+    }
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '预览失败')
+  } finally {
+    importPreviewing.value = false
+  }
+}
+
+const runImportCommit = async () => {
+  if (!importPreview.value?.ok) {
+    await runImportPreview()
+    if (!importPreview.value?.ok) return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将新建 ${importStats.value.create || 0} 条、更新 ${importStats.value.update || 0} 条，跳过 ${importStats.value.skip || 0} 条。继续？`,
+      '确认导入',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  importCommitting.value = true
+  try {
+    const res =
+      importMode.value === 'file'
+        ? await commitProjectAccountsImportFile(props.projectId, buildImportFormData())
+        : await commitProjectAccountsImport(props.projectId, {
+            text: importText.value,
+            default_env: envFilter.value || 'test',
+            on_duplicate: importDup.value,
+          })
+    const st = res?.data?.stats || {}
+    ElMessage.success(
+      `导入完成：新建 ${st.created || 0}，更新 ${st.updated || 0}，跳过 ${(res?.data?.skipped || []).length}，失败 ${st.errors || 0}`,
+    )
+    importOpen.value = false
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '导入失败')
+  } finally {
+    importCommitting.value = false
+  }
+}
+
+const importActionLabel = (action) => {
+  const m = { create: '新建', update: '更新', skip: '跳过', error: '错误' }
+  return m[action] || action
 }
 
 const openCreate = () => {
@@ -405,13 +583,17 @@ onActivated(load)
             <el-option v-for="f in LEASE_FILTERS" :key="f.value || 'all'" :label="f.label" :value="f.value" />
           </el-select>
           <el-button @click="poolLocalOpen = true">项目模板与字段</el-button>
+          <el-button @click="openImport">批量导入</el-button>
           <el-button type="primary" @click="openCreate">新增账号</el-button>
         </div>
-        <p class="filter-hint">显示 {{ visibleRows.length }} / {{ accounts.length }} 条</p>
+        <p class="filter-hint">
+          筛选 {{ visibleRows.length }} 条 · 号池共 {{ accounts.length }} 条
+        </p>
       </section>
 
       <section class="settings-table-card is-fill">
-        <el-table :data="visibleRows" size="small" border stripe height="100%" row-key="id" empty-text="暂无账号">
+        <div class="table-fill">
+        <el-table :data="pagedAccountRows" size="small" border stripe height="100%" row-key="id" empty-text="暂无账号">
           <el-table-column label="账号" min-width="168" fixed>
             <template #default="{ row }">
               <div class="id-cell">
@@ -463,6 +645,16 @@ onActivated(load)
             </template>
           </el-table-column>
         </el-table>
+        </div>
+        <el-pagination
+          class="settings-table-pager"
+          background
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="visibleRows.length"
+          :page-sizes="TABLE_PAGE_SIZES"
+          v-model:page-size="accountPageSize"
+          v-model:current-page="accountPage"
+        />
       </section>
     </template>
 
@@ -510,14 +702,17 @@ onActivated(load)
       </section>
 
       <section class="settings-table-card is-fill">
-        <el-table :data="ranked" size="small" border stripe height="100%" row-key="id" empty-text="写前置后点试筛">
+        <div class="table-fill">
+        <el-table :data="pagedRanked" size="small" border stripe height="100%" row-key="id" empty-text="写前置后点试筛">
           <el-table-column label="#" width="48">
-            <template #default="{ $index }">{{ $index + 1 }}</template>
+            <template #default="{ $index }">
+              {{ (trialPage - 1) * trialPageSize + $index + 1 }}
+            </template>
           </el-table-column>
           <el-table-column label="账号" min-width="140">
-            <template #default="{ row, $index }">
+            <template #default="{ row }">
               {{ accountHeadline(row) }}
-              <em v-if="$index === 0" class="pick-em">首选</em>
+              <em v-if="isTopRankedRow(row)" class="pick-em">首选</em>
             </template>
           </el-table-column>
           <el-table-column label="状态" min-width="220">
@@ -534,6 +729,17 @@ onActivated(load)
             </template>
           </el-table-column>
         </el-table>
+        </div>
+        <el-pagination
+          v-if="ranked.length"
+          class="settings-table-pager"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="ranked.length"
+          :page-sizes="TABLE_PAGE_SIZES"
+          v-model:page-size="trialPageSize"
+          v-model:current-page="trialPage"
+        />
       </section>
     </template>
 
@@ -546,7 +752,8 @@ onActivated(load)
         <p class="filter-hint">跑批清缓存 / inspect / 登录流块会写入登记簿；可在此核对机态。</p>
       </section>
       <section class="settings-table-card is-fill">
-        <el-table :data="deviceSessions" size="small" border stripe height="100%" empty-text="无设备或未配置被测 App 包名">
+        <div class="table-fill">
+        <el-table :data="pagedDeviceSessions" size="small" border stripe height="100%" empty-text="无设备或未配置被测 App 包名">
           <el-table-column prop="sn" label="SN" width="140" show-overflow-tooltip />
           <el-table-column prop="device_label" label="设备" width="120" show-overflow-tooltip />
           <el-table-column prop="package_id" label="包名" min-width="160" show-overflow-tooltip />
@@ -561,6 +768,16 @@ onActivated(load)
           <el-table-column prop="identity_hint" label="身份摘要" min-width="120" show-overflow-tooltip />
           <el-table-column prop="observed_at" label="观测时间" width="160" />
         </el-table>
+        </div>
+        <el-pagination
+          class="settings-table-pager"
+          background
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="deviceSessions.length"
+          :page-sizes="TABLE_PAGE_SIZES"
+          v-model:page-size="devicePageSize"
+          v-model:current-page="devicePage"
+        />
       </section>
     </template>
 
@@ -644,6 +861,95 @@ onActivated(load)
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="importOpen"
+      title="批量导入账号"
+      class="mo-fit-dialog account-dialog account-dialog-70"
+      align-center
+      append-to-body
+      destroy-on-close
+    >
+      <p class="filter-hint">
+        支持上传 <strong>.xlsx / .csv</strong> 或粘贴表格；首行为表头。列名：手机号、邮箱、展示名、密码、登录态、备注及项目扩展字段中文名。
+      </p>
+      <el-radio-group v-model="importMode" style="margin-bottom: 10px">
+        <el-radio-button value="paste">粘贴</el-radio-button>
+        <el-radio-button value="file">上传文件</el-radio-button>
+      </el-radio-group>
+      <div class="pick-row" style="margin-bottom: 8px; flex-wrap: wrap; gap: 8px">
+        <el-select v-model="importDup" style="width: 200px">
+          <el-option label="已存在：合并（补空字段）" value="merge" />
+          <el-option label="已存在：跳过" value="skip" />
+          <el-option label="已存在：覆盖凭证与状态" value="overwrite_credentials" />
+        </el-select>
+        <el-button @click="downloadImportTemplate">下载模板</el-button>
+        <el-button v-if="importMode === 'paste'" @click="fillImportSample">填入示例</el-button>
+        <el-button :loading="importPreviewing" @click="runImportPreview">预览</el-button>
+      </div>
+      <el-upload
+        v-if="importMode === 'file'"
+        drag
+        :auto-upload="false"
+        :limit="1"
+        accept=".csv,.txt,.xlsx"
+        :on-change="onImportFileChange"
+        :on-remove="() => { importFile.value = null; importPreview.value = null }"
+      >
+        <div class="el-upload__text">拖拽或点击选择表格文件</div>
+        <template #tip>
+          <span v-if="importFile" class="filter-hint">已选：{{ importFile.name }}</span>
+        </template>
+      </el-upload>
+      <el-input
+        v-else
+        v-model="importText"
+        type="textarea"
+        :rows="10"
+        placeholder="粘贴 Excel 复制的表格…"
+      />
+      <div v-if="importPreview?.stats" class="import-stats">
+        预览：新建 {{ importStats.create }} · 更新 {{ importStats.update }} · 跳过 {{ importStats.skip }} · 错误 {{ importStats.error }}
+        <span v-if="importPreview.preview_truncated">（仅展示前 80 行）</span>
+      </div>
+      <el-table
+        v-if="importPreviewRows.length"
+        :data="pagedImportPreviewRows"
+        size="small"
+        border
+        max-height="240"
+        style="margin-top: 12px"
+      >
+        <el-table-column prop="row" label="行" width="52" />
+        <el-table-column label="动作" width="72">
+          <template #default="{ row }">{{ importActionLabel(row.action) }}</template>
+        </el-table-column>
+        <el-table-column label="手机号" width="120">
+          <template #default="{ row }">{{ row.incoming?.phone || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="展示名" min-width="100">
+          <template #default="{ row }">{{ row.incoming?.display_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.error || row.reason || row.account_id || '—' }}</template>
+        </el-table-column>
+      </el-table>
+      <el-pagination
+        v-if="importPreviewRows.length > importPreviewPageSize"
+        class="settings-table-pager"
+        background
+        small
+        layout="total, prev, pager, next"
+        :total="importPreviewRows.length"
+        :page-size="importPreviewPageSize"
+        v-model:current-page="importPreviewPage"
+        style="margin-top: 8px"
+      />
+      <template #footer>
+        <el-button @click="importOpen = false">取消</el-button>
+        <el-button type="primary" :loading="importCommitting" @click="runImportCommit">确认导入</el-button>
+      </template>
+    </el-dialog>
+
     <ProjectAccountPoolDialog
       v-model="poolLocalOpen"
       :project-id="projectId"
@@ -667,6 +973,14 @@ onActivated(load)
 .chosen-card,
 .trial-hint {
   flex-shrink: 0;
+}
+.assets-page > .settings-table-card.is-fill {
+  flex: 1;
+  min-height: 0;
+}
+.table-fill {
+  flex: 1;
+  min-height: 0;
 }
 .page-lead {
   margin: 0;

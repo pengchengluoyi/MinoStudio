@@ -1565,7 +1565,7 @@ watch(selectedCaseIds, () => {
               @click="runForm.coverage = 'once'"
             >
               <strong>加速拆分</strong>
-              <span>每条用例只跑一次，空闲设备接着领</span>
+              <span>用例轮询分到各台设备，多台同时执行（每条只跑一次）</span>
               <em>{{ selectedCaseIds.length ? `${selectedCaseIds.length} 次执行` : '先勾选用例' }}</em>
             </button>
             <button

@@ -120,6 +120,48 @@ export const createProjectAccount = (projectId, payload) => {
     })
 }
 
+export const previewProjectAccountsImport = (projectId, payload) => {
+    return request({
+        url: `/project/${projectId}/accounts/import/preview`,
+        method: 'post',
+        data: payload,
+    })
+}
+
+export const commitProjectAccountsImport = (projectId, payload) => {
+    return request({
+        url: `/project/${projectId}/accounts/import/commit`,
+        method: 'post',
+        data: payload,
+    })
+}
+
+export const previewProjectAccountsImportFile = (projectId, formData) => {
+    return request({
+        url: `/project/${projectId}/accounts/import/preview-file`,
+        method: 'post',
+        data: formData,
+        timeout: 120000,
+    })
+}
+
+export const commitProjectAccountsImportFile = (projectId, formData) => {
+    return request({
+        url: `/project/${projectId}/accounts/import/commit-file`,
+        method: 'post',
+        data: formData,
+        timeout: 120000,
+    })
+}
+
+export const downloadProjectAccountsImportTemplate = (projectId) => {
+    return request({
+        url: `/project/${projectId}/accounts/import/template`,
+        method: 'get',
+        responseType: 'blob',
+    })
+}
+
 export const deleteProjectAccount = (projectId, accountId) => {
     return request({
         url: `/project/${projectId}/accounts/${accountId}`,
