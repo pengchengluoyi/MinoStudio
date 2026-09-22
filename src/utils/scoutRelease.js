@@ -103,7 +103,13 @@ export const manifestUrlForTag = (manifestUrl, tag) => {
 }
 
 export const nodeScoutVersion = (node) =>
-  normalizeScoutVersion(node?.scout_version || node?.version || '')
+  normalizeScoutVersion(
+    node?.app_layer ||
+      node?.installed_layers?.app ||
+      node?.scout_version ||
+      node?.version ||
+      '',
+  )
 
 export const scoutVersionStatus = (installed, latest) => {
   const cur = normalizeScoutVersion(installed)

@@ -354,7 +354,33 @@ const readInstalledScoutLayers = () => {
   }
 }
 
-const planScoutUpdateHere = (item = {}) => planScoutUpdate(item, readInstalledScoutLayers())
+/** 与 Scout `stale_process.read_disk_app_semver` 一致：读 app 层 core.py 里的 SCOUT_VERSION。 */
+const readScoutDiskAppSemver = () => {
+  try {
+    const corePath = path.join(scoutConfigDir(), 'bin', 'app', 'mino_scout', 'core.py')
+    if (!fs.existsSync(corePath)) return ''
+    const m = fs.readFileSync(corePath, 'utf8').match(/^SCOUT_VERSION\s*=\s*"([^"]+)"/m)
+    return m ? String(m[1]).trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+const readInstalledBrowserDirs = () => {
+  try {
+    const root = path.join(scoutConfigDir(), 'bin', 'ms-playwright')
+    if (!fs.existsSync(root)) return []
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+      .map((d) => d.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+const planScoutUpdateHere = (item = {}) =>
+  planScoutUpdate(item, readInstalledScoutLayers(), { browserDirs: readInstalledBrowserDirs() })
 
 const scoutBinCandidates = () => {
   const home = scoutConfigDir()
@@ -852,17 +878,80 @@ const downloadToFile = (url, dest, onProgress) => new Promise((resolve, reject) 
   go(url)
 })
 
+const scoutLogFilesDir = () => {
+  if (process.platform === 'darwin') {
+    return path.join(app.getPath('home'), 'Library', 'Logs', 'MinoScout')
+  }
+  return path.join(scoutConfigDir(), 'logs')
+}
+
+const readLogTailLines = (filePath, lines) => {
+  if (!fs.existsSync(filePath)) return []
+  try {
+    const text = fs.readFileSync(filePath, 'utf8')
+    const rows = text.split(/\r?\n/)
+    return rows.slice(-lines)
+  } catch {
+    return []
+  }
+}
+
+ipcMain.handle('scout-open-logs-folder', async () => {
+  const dir = scoutLogFilesDir()
+  fs.mkdirSync(dir, { recursive: true })
+  const err = await shell.openPath(dir)
+  return { ok: !err, dir, error: err || '' }
+})
+
+ipcMain.handle('scout-read-log-tail', async (_event, payload = {}) => {
+  const lines = Math.min(2000, Math.max(1, Number(payload?.lines) || 200))
+  const dir = scoutLogFilesDir()
+  fs.mkdirSync(dir, { recursive: true })
+  const stdout = path.join(dir, 'scout.log')
+  const stderr = path.join(dir, 'scout.err.log')
+  return {
+    ok: true,
+    paths: { dir, stdout, stderr },
+    files: {
+      stdout: { path: stdout, exists: fs.existsSync(stdout), tail: readLogTailLines(stdout, lines) },
+      stderr: { path: stderr, exists: fs.existsSync(stderr), tail: readLogTailLines(stderr, lines) },
+    },
+    lines,
+  }
+})
+
 ipcMain.handle('scout-installed-version', async () => {
   const config = readScoutConfig()
   const appInstalled = scoutBinaryInstalled()
   const live = await scoutIsRunning()
+  let installedLayers = null
+  try {
+    const layersPath = path.join(scoutConfigDir(), 'bin', 'layers.txt')
+    if (fs.existsSync(layersPath)) {
+      const rows = fs.readFileSync(layersPath, 'utf8').split(/\r?\n/)
+      const map = {}
+      for (const line of rows) {
+        const t = line.trim()
+        if (!t || t.startsWith('#')) continue
+        const parts = t.split(/\s+/)
+        if (parts.length >= 2) map[parts[0]] = parts[1]
+      }
+      if (Object.keys(map).length) installedLayers = map
+    }
+  } catch { /* ignore */ }
+  const appLayer = installedLayers?.app || config?.installed_layers?.app || null
+  const version = appInstalled
+    ? (appLayer || config?.version || null)
+    : null
   return {
     installed: appInstalled,
     appInstalled,
     running: !!live.running,
     pid: live.pid || null,
     configPath: scoutConfigPath(),
-    version: appInstalled ? (config?.version || null) : null,
+    version,
+    appLayer,
+    installedLayers,
     nexusUrl: config?.nexus_url || null,
     scoutId: appInstalled ? (config?.scout_id || null) : null,
     studioId: loadStudioId(),
@@ -1166,10 +1255,17 @@ const runScoutSetup = async (payload = {}) => {
       label: SETUP_STAGES.start.label,
       percent: mapStagePercent('start', 25),
     })
-    const started = await startScoutService({
-      requireFreshProcess: needsPayloadInstall,
-      previousPid: beforeInstall.pid || 0,
-    })
+    // layers 已与 GitHub 一致但进程仍是旧 import（典型：只热更了 app 层）→ 必须换进程。
+    const staleReload = plan.mode === 'up-to-date' && beforeInstall.running
+    let started
+    if (staleReload) {
+      started = await restartScoutService()
+    } else {
+      started = await startScoutService({
+        requireFreshProcess: needsPayloadInstall,
+        previousPid: beforeInstall.pid || 0,
+      })
+    }
     if (!started?.ok) {
       throw new Error(started?.error || '启动失败')
     }
@@ -1181,14 +1277,16 @@ const runScoutSetup = async (payload = {}) => {
     emitSetupProgress({
       active: false,
       stage: 'done',
-      label: needsPayloadInstall ? '已更新并重启' : '已启动',
+      label: needsPayloadInstall
+        ? '已更新并重启'
+        : (staleReload ? '已是最新，已重启以加载 app 层' : '已启动'),
       percent: 100,
       error: '',
     })
     return {
       ok: true,
       launched: true,
-      restarted: needsPayloadInstall,
+      restarted: needsPayloadInstall || staleReload,
       previousPid: beforeInstall.pid || null,
       path: lastDest,
       unpacked: lastRoot,
@@ -1196,6 +1294,7 @@ const runScoutSetup = async (payload = {}) => {
       mode: plan.mode,
       layers: plan.steps.map((s) => s.layer).filter(Boolean),
       bytes: plan.bytes,
+      disk_app_semver: readScoutDiskAppSemver(),
     }
   } catch (e) {
     emitSetupProgress({

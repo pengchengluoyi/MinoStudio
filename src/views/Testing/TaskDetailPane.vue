@@ -9,7 +9,7 @@ import {
   runCaseRunner,
 } from '@/api/caseRunner'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
-import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
+import TaskResourceRestorePanel from '@/components/TaskResourceRestorePanel.vue'
 import { fetchTaskDetail, useLiveTaskRefresh } from '@/composables/useTestingTasks'
 import { getAppAutomationConfig } from '@/api/appAutomation'
 import { reviewKnowledgeItem } from '@/api/settings'
@@ -52,7 +52,7 @@ const props = defineProps({
   caseId: { type: String, default: '' },
   caseSn: { type: String, default: '' },
 })
-const emit = defineEmits(['open-task', 'open-case', 'open-session-log'])
+const emit = defineEmits(['open-task', 'open-case', 'open-session-log', 'open-resource-logs'])
 
 const loading = ref(false)
 const task = ref(null)
@@ -146,6 +146,14 @@ const taskResourceCard = computed(() => {
   }
   return null
 })
+const taskRestoreCaseId = computed(() => {
+  if (!isCasePage.value) return ''
+  return String(selectedCase.value?.case_id || '').trim()
+})
+
+const onOpenResourceLogs = (payload) => {
+  emit('open-resource-logs', payload || { run_id: props.taskId })
+}
 const resourceCardRows = computed(() => {
   const card = taskResourceCard.value
   if (!card) return []
@@ -841,6 +849,13 @@ const saveReview = async () => {
       <p v-else-if="selectedCase && (selectedCase.status === 'cancelled' || selectedCase.status === 'skipped')" class="pending-hint">
         {{ selectedCase.summary || '该用例未执行或已取消' }}
       </p>
+      <TaskResourceRestorePanel
+        v-if="taskId"
+        compact
+        :task-id="taskId"
+        :case-id="taskRestoreCaseId"
+        @open-logs="onOpenResourceLogs"
+      />
       <div v-if="selectedCase" class="timeline-pane">
         <ExecutionTimeline
           class="tl"
@@ -1058,6 +1073,11 @@ const saveReview = async () => {
               </span>
             </div>
           </section>
+          <TaskResourceRestorePanel
+            v-if="taskId"
+            :task-id="taskId"
+            @open-logs="onOpenResourceLogs"
+          />
           <p class="signoff-note">
             通过＝当前屏检测成立。失败＝检测了但没过，才可能是产品红。不可做＝认不出 / 动作表外 / 这句看不了。还没测到＝红了就停或没轮到。
           </p>

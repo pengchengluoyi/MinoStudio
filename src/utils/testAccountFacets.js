@@ -7,7 +7,7 @@ export const ACCOUNT_HEALTH_OPTIONS = [
   { value: 'bad', label: '坏号', tone: 'danger' },
 ]
 
-export const TEMPLATE_FIELD_SKIP_KEYS = new Set(['health'])
+export const TEMPLATE_FIELD_SKIP_KEYS = new Set(['health', 'lifecycle', 'session'])
 
 const UNCONFIGURED_LABELS = new Set(['未设置', '—', '-', '无'])
 
@@ -26,6 +26,7 @@ export function extensionFieldDefs(extensions) {
     key: x.key,
     label: x.label || x.key,
     help: x.help || '',
+    data_kind: x.data_kind || 'static',
     options: (x.options || []).map((o) => ({
       value: o.value,
       label: o.label || o.value,
@@ -140,11 +141,38 @@ export function healthDisplayRow(health) {
   }
 }
 
-/** 表格「模板状态」：仅展示已配置（非 unknown / 未设置）的字段 */
+export const ACCOUNT_CORE_FACET_OPTIONS = {
+  lifecycle: [
+    { value: 'unregistered', label: '未注册' },
+    { value: 'registered', label: '已注册' },
+  ],
+  session: [
+    { value: 'logged_out', label: '未登录' },
+    { value: 'logged_in', label: '已登录' },
+    { value: 'guest', label: '游客' },
+  ],
+}
+
+/** 表格「模板状态」：账号级 + 已配置的业务模板字段 */
 export function statusDisplayRows(row, fieldDefs = null) {
   const defs = fieldDefs || templateFieldDefsForRow(row)
   const facets = row?.facets && typeof row.facets === 'object' ? row.facets : {}
   const rows = []
+  for (const core of [
+    { key: 'lifecycle', title: '注册' },
+    { key: 'session', title: '登录' },
+  ]) {
+    const val = String(facets[core.key] || 'unknown')
+    if (val === 'unknown') continue
+    const hit = (ACCOUNT_CORE_FACET_OPTIONS[core.key] || []).find((o) => o.value === val)
+    rows.push({
+      key: core.key,
+      title: core.title,
+      value: val,
+      label: hit?.label || val,
+      tone: 'muted',
+    })
+  }
   const healthVal = String(facets.health || 'available')
   if (healthVal !== 'available') {
     rows.push(healthDisplayRow(healthVal))
@@ -159,7 +187,7 @@ export function statusDisplayRows(row, fieldDefs = null) {
       title: def.label,
       value: val,
       label: meta.label,
-      tone: meta.tone,
+      tone: def.data_kind === 'dynamic' ? 'warn' : meta.tone,
     })
   }
   return rows
@@ -188,6 +216,7 @@ export function accountSubline(row) {
   if (email && email !== accountHeadline(row)) parts.push(email)
   if (phone && phone !== accountHeadline(row)) parts.push(phone)
   if (row?.account_id) parts.push(row.account_id)
+  if (row?.registered_at) parts.push(`入库 ${row.registered_at}`)
   return parts.join(' · ') || '—'
 }
 

@@ -7,12 +7,28 @@ const pickData = (res) => res?.data || res || {}
 export const listRuntimeNodes = (params = {}) =>
   request({ url: '/runtime/nodes', method: 'get', params })
 
-export const sendNodeCommand = (nodeId, command, { studioId = '', reason = 'studio' } = {}) =>
+export const sendNodeCommand = (nodeId, command, { studioId = '', reason = 'studio', timeout } = {}) =>
   request({
     url: `/runtime/nodes/${encodeURIComponent(nodeId)}/command`,
     method: 'post',
     params: studioId ? { studio_id: studioId } : {},
     data: { command, reason },
+    timeout: timeout ?? (command === 'update' ? 660000 : 60000),
+  })
+
+export const getNodeWorkload = (nodeId, params = {}) =>
+  request({
+    url: `/runtime/nodes/${encodeURIComponent(nodeId)}/workload`,
+    method: 'get',
+    params,
+  })
+
+export const getNodeLogs = (nodeId, { lines = 200, studioId = '' } = {}) =>
+  request({
+    url: `/runtime/nodes/${encodeURIComponent(nodeId)}/logs`,
+    method: 'get',
+    params: { lines, ...(studioId ? { studio_id: studioId } : {}) },
+    timeout: 60000,
   })
 
 const fetchManifestJson = async (url) => {

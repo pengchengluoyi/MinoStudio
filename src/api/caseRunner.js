@@ -36,6 +36,24 @@ export const cancelTestingTask = (taskId) =>
 export const retryFailedTestingTask = (taskId) =>
   request({ url: `/case-runner/tasks/${encodeURIComponent(taskId)}/retry-failed`, method: 'post' })
 
+/** 本任务产生的模板状态变更日志（可恢复快照） */
+export const getTaskResourceRestoreLogs = (taskId, { page = 1, page_size = 30, case_id = '' } = {}) =>
+  request({
+    url: `/case-runner/tasks/${encodeURIComponent(taskId)}/resource-restore-logs`,
+    method: 'get',
+    params: {
+      page,
+      page_size,
+      case_id: case_id || undefined,
+    },
+  })
+
+export const restoreTaskResourceLog = (taskId, logId) =>
+  request({
+    url: `/case-runner/tasks/${encodeURIComponent(taskId)}/resource-restore-logs/${logId}/restore`,
+    method: 'post',
+  })
+
 export const listTestingTaskSummary = (appIds = []) =>
   request({
     url: '/case-runner/tasks/summary',

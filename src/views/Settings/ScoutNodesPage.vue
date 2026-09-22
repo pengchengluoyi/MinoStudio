@@ -10,7 +10,10 @@ import {
   listRuntimeNodes,
   parseRuntimeNodes,
   sendNodeCommand,
+  getNodeWorkload,
+  getNodeLogs,
 } from '@/api/runtime'
+import { disableAdbKeyboard } from '@/api/device'
 import { canInstallLocalScout, nexusOrigin, scoutManifestUrl } from '@/utils/config'
 import {
   packedArchForOs,
@@ -49,6 +52,7 @@ const starting = ref(false)
 const stopping = ref(false)
 const restarting = ref(false)
 const updating = ref(false)
+const remoteUpdateJob = ref(null)
 const copyingRemote = ref(false)
 const uninstalling = ref(false)
 const installProgress = ref(null)
@@ -60,6 +64,14 @@ const setupJob = ref({
   error: '',
 })
 const busyId = ref('')
+const logDialogVisible = ref(false)
+const logDialogTitle = ref('Scout 日志')
+const logDialogText = ref('')
+const workloadDialogVisible = ref(false)
+const workloadRows = ref([])
+const workloadTitle = ref('')
+const deviceRestoreBusy = ref('')
+const logsBusy = ref(false)
 const remoteBusy = computed(() => Boolean(busyId.value))
 const startJob = ref({
   active: false,
@@ -123,12 +135,52 @@ const versionBannerHint = computed(() => {
   return '比对来源：GitHub Release Latest（不含 Pre-release）。推 main 触发的 dev 包不会当作最新。'
 })
 const rowNeedsUpdate = (row) => {
-  const cur = nodeScoutVersion(row)
+  const cur = row?._local
+    ? normalizeScoutVersion(localScout.value.version || localScout.value.appLayer || '')
+    : nodeScoutVersion(row)
   if (!cur || !latestVersion.value) return false
   return scoutVersionStatus(cur, latestVersion.value) === 'outdated'
 }
 
+/** Nexus REGISTER/心跳里的版本（可能与磁盘不一致） */
+const nexusReportedVersion = (row) => nodeScoutVersion(row)
+
+const localVersionMismatch = computed(() => {
+  const installed = normalizeScoutVersion(localScout.value.version || localScout.value.appLayer || '')
+  const id = String(resolvedLocalId.value || localId.value || '').toLowerCase()
+  const hit = id
+    ? nodes.value.find((n) => String(n.node_id || n.scout_id || '').toLowerCase() === id)
+    : null
+  const reported = normalizeScoutVersion(hit?.scout_version || '')
+  return Boolean(installed && reported && installed !== reported)
+})
+
 const rowOnline = (row) => Boolean(row?.status === 'online' || row?.online || row?.alive)
+
+const isAndroidDevice = (d) => {
+  const t = String(d?.type || d?.platform || '').toLowerCase()
+  return t === 'android' || t.includes('android')
+}
+
+const deviceOnline = (d) => d?.status === 'online' || d?.online
+
+const restoreAndroidDevice = async (d) => {
+  const sn = String(d?.sn || '').trim()
+  if (!sn || !isAndroidDevice(d) || !deviceOnline(d)) return
+  deviceRestoreBusy.value = sn
+  try {
+    const res = await disableAdbKeyboard(sn)
+    if (res?.code === 200) {
+      ElMessage.success(res?.msg || '已恢复')
+    } else {
+      ElMessage.error(res?.msg || '恢复失败')
+    }
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '恢复失败')
+  } finally {
+    deviceRestoreBusy.value = ''
+  }
+}
 
 const remoteCommandId = (row) => {
   const nid = String(row?.node_id || row?.scout_id || '').trim()
@@ -147,6 +199,13 @@ const setupPhase = computed(() => {
   return '安装中'
 })
 const setupProgressText = computed(() => {
+  const remote = remoteUpdateJob.value
+  if (remote && (remote.active || updating.value)) {
+    const label = remote.label || remote.stage || '远程更新'
+    const pct = Number(remote.percent)
+    if (Number.isFinite(pct) && pct >= 0) return `远程更新 · ${label} ${Math.round(pct)}%`
+    return `远程更新 · ${label}`
+  }
   const phase = setupPhase.value
   const label = setupJob.value.label || phase
   if (downloadPercent.value != null) return `${phase} · ${label} ${downloadPercent.value}%`
@@ -246,6 +305,9 @@ const refreshLocal = async () => {
   try {
     const next = await window.electronAPI.scoutInstalledVersion()
     localScout.value = { ...localScout.value, ...(next || {}) }
+    if (next?.appLayer && !next?.version) {
+      localScout.value.version = next.appLayer
+    }
     if (next?.setup) applySetupJob(next.setup)
   } catch { /* ignore */ }
 }
@@ -253,7 +315,17 @@ const refreshLocal = async () => {
 const refreshNodes = async () => {
   try {
     const res = await listRuntimeNodes(studioId.value ? { studio_id: studioId.value } : {})
-    nodes.value = parseRuntimeNodes(res)
+    let rows = parseRuntimeNodes(res)
+    const lv = normalizeScoutVersion(localScout.value.version || '')
+    const lid = String(resolvedLocalId.value || localId.value || '').toLowerCase()
+    if (lv && lid) {
+      rows = rows.map((n) => {
+        const id = String(n.node_id || n.scout_id || '').toLowerCase()
+        if (id !== lid) return n
+        return { ...n, scout_version: lv, app_layer: lv }
+      })
+    }
+    nodes.value = rows
   } catch (e) {
     const status = e?.response?.status
     if (status !== 404 && status !== 501 && status !== 502) {
@@ -303,12 +375,14 @@ const localRow = computed(() => {
   const running = Boolean(localScout.value.running)
   if (matched) {
     const online = matched.status === 'online' || matched.online || matched.alive || running
+    const localVer = normalizeScoutVersion(localScout.value.version || '')
     return {
       ...matched,
       hostname: matched.hostname || '本机',
       status: online ? 'online' : (matched.status || 'offline'),
       online,
       alive: online,
+      scout_version: localVer || matched.scout_version || '',
       _local: true,
       _placeholder: false,
     }
@@ -401,6 +475,83 @@ const heartbeatText = (row) => {
   return t === '—' ? '' : t
 }
 
+const formatLogPayload = (payload) => {
+  if (!payload) return ''
+  const files = payload.files || {}
+  const parts = []
+  for (const key of ['stdout', 'stderr']) {
+    const block = files[key]
+    if (!block) continue
+    const tail = block.tail || []
+    if (!tail.length && !block.exists) continue
+    parts.push(`=== ${key} (${block.path || key}) ===\n${tail.join('\n')}`)
+  }
+  return parts.join('\n\n') || '（暂无日志内容）'
+}
+
+const openLocalLogsFolder = async () => {
+  const api = window.electronAPI
+  if (!api?.scoutOpenLogsFolder) {
+    ElMessage.warning('请在桌面 Studio 中打开日志目录')
+    return
+  }
+  const res = await api.scoutOpenLogsFolder()
+  if (!res?.ok) ElMessage.warning(res?.error || '无法打开目录')
+}
+
+const viewLocalLogs = async () => {
+  const api = window.electronAPI
+  if (!api?.scoutReadLogTail) {
+    ElMessage.warning('请在桌面 Studio 中查看日志')
+    return
+  }
+  logsBusy.value = true
+  try {
+    const res = await api.scoutReadLogTail({ lines: 300 })
+    logDialogTitle.value = '本机 Scout 日志'
+    logDialogText.value = formatLogPayload(res)
+    logDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error(e?.message || '读取失败')
+  } finally {
+    logsBusy.value = false
+  }
+}
+
+const viewRemoteLogs = async (row) => {
+  const nid = remoteCommandId(row)
+  if (!nid) return
+  logsBusy.value = true
+  try {
+    const res = await getNodeLogs(nid, { lines: 300, studioId: studioId.value })
+    const data = res?.data || res || {}
+    logDialogTitle.value = `节点 ${nid} 日志`
+    logDialogText.value = formatLogPayload(data.logs || data)
+    logDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '拉取失败')
+  } finally {
+    logsBusy.value = false
+  }
+}
+
+const showNodeWorkload = async (row) => {
+  const nid = remoteCommandId(row) || (rowActions(row).local ? resolvedLocalId.value : '')
+  if (!nid) {
+    ElMessage.warning('节点未在线或未注册')
+    return
+  }
+  try {
+    const res = await getNodeWorkload(nid, studioId.value ? { studio_id: studioId.value } : {})
+    const data = res?.data || res || {}
+    workloadTitle.value = `节点 ${nid} 任务`
+    workloadRows.value = data.devices || []
+    workloadDialogVisible.value = true
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '查询失败')
+  }
+}
+
 const runLocal = async (kind) => {
   const api = window.electronAPI
   if (!api?.scoutStart || !api?.scoutStop) {
@@ -455,6 +606,24 @@ const runLocal = async (kind) => {
 
 const runRemote = async (row, command) => {
   busyId.value = `${row.node_id}:${command}`
+  const nodeKey = remoteCommandId(row)
+  let pollTimer = null
+  if (command === 'update') {
+    updating.value = true
+    remoteUpdateJob.value = { active: true, label: '已下发更新', percent: 0, stage: 'plan' }
+    pollTimer = setInterval(async () => {
+      try {
+        await refreshNodes()
+        const hit = nodes.value.find(
+          (n) => String(n.node_id || n.scout_id || '').trim() === nodeKey,
+        )
+        const job = hit?.update_job
+        if (job && typeof job === 'object' && Object.keys(job).length) {
+          remoteUpdateJob.value = job
+        }
+      } catch { /* ignore poll errors */ }
+    }, 1500)
+  }
   try {
     const res = await sendNodeCommand(row.node_id || row.scout_id, command, { studioId: studioId.value })
     const data = res?.data || res || {}
@@ -472,6 +641,11 @@ const runRemote = async (row, command) => {
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '下发失败')
   } finally {
+    if (pollTimer) clearInterval(pollTimer)
+    if (command === 'update') {
+      updating.value = false
+      remoteUpdateJob.value = null
+    }
     busyId.value = ''
   }
 }
@@ -804,6 +978,9 @@ onUnmounted(() => {
             {{ localRow.hostname || '本机' }}
             <template v-if="platform.os"> · {{ platform.os }}-{{ platform.arch }}</template>
             <template v-if="installedVersion"> · 本机 v{{ installedVersion }}</template>
+            <template v-if="localVersionMismatch">
+              · Nexus 仍报 v{{ nexusReportedVersion(localRow) }}（进程未重载，点「更新」或「重启」）
+            </template>
             <template v-if="latestVersion"> · 最新 v{{ latestVersion }}</template>
             <template v-if="heartbeatText(localRow)"> · {{ heartbeatText(localRow) }}</template>
           </p>
@@ -816,6 +993,26 @@ onUnmounted(() => {
             :disabled="!rowActions(localRow).start.enabled || starting || remoteBusy"
             @click="act(localRow, 'start')"
           >{{ starting ? (startJob.label || '启动中…') : '启动' }}</button>
+          <button
+            v-if="isElectron && localInstalled"
+            type="button"
+            class="settings-action-pill"
+            :disabled="logsBusy"
+            @click="openLocalLogsFolder"
+          >打开日志目录</button>
+          <button
+            v-if="isElectron && localInstalled"
+            type="button"
+            class="settings-action-pill"
+            :disabled="logsBusy"
+            @click="viewLocalLogs"
+          >查看日志</button>
+          <button
+            v-if="localInstalled && rowOnline(localRow)"
+            type="button"
+            class="settings-action-pill"
+            @click="showNodeWorkload(localRow)"
+          >在跑任务</button>
           <button
             v-if="rowActions(localRow).stop.visible"
             type="button"
@@ -897,6 +1094,17 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="72">
+          <template #default="{ row: d }">
+            <button
+              v-if="isAndroidDevice(d) && deviceOnline(d)"
+              type="button"
+              class="settings-action-pill"
+              :disabled="deviceRestoreBusy === d.sn"
+              @click="restoreAndroidDevice(d)"
+            >{{ deviceRestoreBusy === d.sn ? '…' : '恢复' }}</button>
+          </template>
+        </el-table-column>
       </el-table>
     </section>
 
@@ -923,6 +1131,17 @@ onUnmounted(() => {
                   <el-tag size="small" :type="d.status === 'online' ? 'success' : 'info'">
                     {{ d.status === 'online' ? '在线' : '离线' }}
                   </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="72">
+                <template #default="{ row: d }">
+                  <button
+                    v-if="isAndroidDevice(d) && deviceOnline(d)"
+                    type="button"
+                    class="settings-action-pill"
+                    :disabled="deviceRestoreBusy === d.sn"
+                    @click="restoreAndroidDevice(d)"
+                  >{{ deviceRestoreBusy === d.sn ? '…' : '恢复' }}</button>
                 </template>
               </el-table-column>
             </el-table>
@@ -958,9 +1177,22 @@ onUnmounted(() => {
         <el-table-column label="心跳" width="100">
           <template #default="{ row }">{{ heartbeatText(row) || '—' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
+              <button
+                v-if="rowOnline(row)"
+                type="button"
+                class="settings-action-pill"
+                @click="showNodeWorkload(row)"
+              >任务</button>
+              <button
+                v-if="rowOnline(row)"
+                type="button"
+                class="settings-action-pill"
+                :disabled="logsBusy"
+                @click="viewRemoteLogs(row)"
+              >日志</button>
               <button
                 v-if="rowActions(row).update.visible"
                 type="button"
@@ -987,6 +1219,29 @@ onUnmounted(() => {
         </el-table-column>
       </el-table>
     </section>
+
+    <el-dialog v-model="logDialogVisible" :title="logDialogTitle" width="720px" destroy-on-close>
+      <pre class="scout-log-pre">{{ logDialogText }}</pre>
+    </el-dialog>
+
+    <el-dialog v-model="workloadDialogVisible" :title="workloadTitle" width="640px" destroy-on-close>
+      <el-table :data="workloadRows" size="small" border empty-text="暂无设备">
+        <el-table-column prop="sn" label="设备" min-width="120" />
+        <el-table-column label="Scout 步骤" min-width="160">
+          <template #default="{ row: w }">
+            <span v-if="w.scout_step">
+              {{ w.scout_step.run_id }} #{{ w.scout_step.step_idx }} · {{ w.scout_step.capability_id }}
+            </span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="Nexus run" min-width="140">
+          <template #default="{ row: w }">
+            {{ (w.nexus_run_ids || []).join(', ') || '—' }}
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -1086,6 +1341,18 @@ onUnmounted(() => {
 .local-devices,
 .nested-table {
   margin-top: 12px;
+}
+.scout-log-pre {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--mo-surface-2, #f4f4f5);
+  padding: 10px;
+  border-radius: 6px;
 }
 code { font-size: 12px; }
 </style>

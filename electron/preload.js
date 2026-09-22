@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scoutUninstall: () => invoke('scout-uninstall'),
   scoutWriteConfig: (payload) => invoke('scout-write-config', ipcPayload(payload)),
   scoutFetchJson: (url) => invoke('scout-fetch-json', url),
+  scoutOpenLogsFolder: () => invoke('scout-open-logs-folder'),
+  scoutReadLogTail: (payload) => invoke('scout-read-log-tail', ipcPayload(payload)),
   onScoutSetupProgress: (callback) => {
     const listener = (_event, value) => callback(value)
     ipcRenderer.on('scout-setup-progress', listener)

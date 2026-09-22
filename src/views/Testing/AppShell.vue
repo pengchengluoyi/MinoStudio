@@ -9,7 +9,7 @@ import {
 import { getAppAutomationConfig, updateAppAutomationConfig } from '@/api/appAutomation'
 import { getProjectCases } from '@/api/projectCases'
 import { listAIProviders } from '@/api/settings'
-import { createAppInProject, createProject, getProjects } from '@/api/workReport'
+import { createAppInProject, createProject, getProjects, getProjectEnv } from '@/api/workReport'
 import { APP_PLATFORM_OPTIONS, APP_PLATFORM_OPTIONS_ADVANCED } from '@/constants/appPlatforms'
 import WorkShell from '@/layouts/WorkShell.vue'
 import TaskDetailPane from '@/views/Testing/TaskDetailPane.vue'
@@ -137,7 +137,7 @@ const TESTING_NAV = [
     color: '#8b5cf6',
     children: [
       { id: 'accounts', label: '账号管理' },
-      { id: 'trial', label: '试筛资源' },
+      { id: 'logs', label: '资源日志' },
       { id: 'device-apps', label: '机态 App' },
     ],
   },
@@ -220,7 +220,9 @@ const cases = ref([])
 const casesLoading = ref(false)
 const newRunVisible = ref(false)
 const submitting = ref(false)
-const runForm = ref({ sns: [], coverage: 'once', platform: 'android', use_persisted_baseline: true, use_cache: true, async_exec: true })
+const runForm = ref({ sns: [], coverage: 'once', platform: 'android', env_profile: 'test', use_persisted_baseline: true, use_cache: true, async_exec: true })
+const runEnvironments = ref([])
+const runEnvDefault = ref('test')
 const selectedCaseIds = ref([])
 const suites = ref([])
 const selectedSuiteId = ref('')
@@ -687,6 +689,22 @@ const onOpenSessionLog = async (sessionId) => {
   tab.value = 'session-log'
 }
 
+const onOpenTaskResourceLogs = async (payload = {}) => {
+  const runId = String(payload.run_id || payload.taskId || selectedTaskId.value || '').trim()
+  tab.value = 'assets'
+  const q = {
+    ...baseQuery(),
+    tab: 'assets',
+    section: 'logs',
+    logRunId: runId || undefined,
+    task: undefined,
+  }
+  try {
+    await goApp(q)
+  } catch (_) { /* ignore dup nav */ }
+  tab.value = 'assets'
+}
+
 const onOpenTask = async (id) => {
   await loadTasks()
   selectTask({ taskId: id })
@@ -941,6 +959,7 @@ const consumeOpenRun = async () => {
     loadCases(),
     loadDevices(),
     loadSuites(),
+    loadRunEnvironments(),
   ])
   const sns = String(route.query.sns || '').split(',').filter(Boolean)
   selectedSuiteId.value = ''
@@ -963,6 +982,7 @@ const consumeOpenRun = async () => {
     const allowed = sns.filter((sn) => devices.value.some((d) => d.sn === sn))
     if (allowed.length) runForm.value.sns = allowed
   }
+  ensureRunEnvSelection()
   replaceQuery({
     ...baseQuery(),
     tab: 'tasks',
@@ -976,6 +996,42 @@ const consumeOpenRun = async () => {
     sns: undefined,
     envProfile: undefined,
   })
+}
+
+const ensureRunEnvSelection = () => {
+  const keys = runEnvironments.value.map((e) => e.key)
+  const seed = String(runSeed.value?.envProfile || '').trim()
+  let cur = String(runForm.value.env_profile || '').trim()
+  if (seed && keys.includes(seed)) cur = seed
+  if (!cur || (keys.length && !keys.includes(cur))) {
+    cur = keys.includes(runEnvDefault.value) ? runEnvDefault.value : (keys[0] || runEnvDefault.value || 'test')
+  }
+  runForm.value.env_profile = cur || 'test'
+}
+
+const loadRunEnvironments = async () => {
+  let pid = projectId.value
+  if (!pid && appId.value) {
+    try {
+      const autoRes = await getAppAutomationConfig(appId.value).catch(() => null)
+      pid = autoRes?.data?.project_id || ''
+    } catch (_) { /* ignore */ }
+  }
+  if (!pid) {
+    runEnvironments.value = []
+    return
+  }
+  try {
+    const res = await getProjectEnv(pid)
+    const data = res?.data || {}
+    const doc = data.env && typeof data.env === 'object' ? data.env : data
+    runEnvironments.value = Array.isArray(doc.environments) ? doc.environments : []
+    runEnvDefault.value = String(doc.default_profile || runEnvironments.value[0]?.key || 'test')
+  } catch (_) {
+    runEnvironments.value = []
+    runEnvDefault.value = 'test'
+  }
+  ensureRunEnvSelection()
 }
 
 const mergeSeedCases = (seed) => {
@@ -995,8 +1051,10 @@ const openNewRun = async (seed = null) => {
     loadCases(),
     loadDevices(),
     loadSuites(),
+    loadRunEnvironments(),
   ])
   mergeSeedCases(runSeed.value)
+  ensureRunEnvSelection()
   if (runSeed.value?.caseIds?.length) selectedCaseIds.value = [...runSeed.value.caseIds]
   if (runSeed.value?.sns?.length) {
     const allowed = runSeed.value.sns.filter((sn) => devices.value.some((d) => d.sn === sn))
@@ -1049,6 +1107,7 @@ const submitRun = async () => {
       slot_id: runSeed.value?.slotId || '',
       requirement_id: runSeed.value?.requirementId || '',
       release_id: runSeed.value?.releaseId || '',
+      env_profile: runForm.value.env_profile || runEnvDefault.value || 'test',
     })
     const batch = res?.data?.run_id || res?.data?.task_id
     if (!batch) { ElMessage.error('启动失败：未拿到 run_id'); return }
@@ -1163,7 +1222,10 @@ watch(() => runForm.value.sns, (sns) => {
 }, { deep: true })
 
 watch(newRunVisible, (open) => {
-  if (open) syncTreeChecks()
+  if (open) {
+    syncTreeChecks()
+    loadRunEnvironments()
+  }
   if (!open && !submitting.value) runSeed.value = null
 })
 watch(selectedCaseIds, () => {
@@ -1366,6 +1428,7 @@ watch(selectedCaseIds, () => {
           @open-task="onOpenTask"
           @open-case="selectCase"
           @open-session-log="onOpenSessionLog"
+          @open-resource-logs="onOpenTaskResourceLogs"
         >
           <template #actions>
             <template v-if="hasCase">
@@ -1469,7 +1532,14 @@ watch(selectedCaseIds, () => {
       </div>
 
       <div v-else-if="tab === 'assets'" class="ws-config fill">
-        <AssetsPage hide-nav :project-id="projectId" :project-name="projectName" :app-id="appId" :section="activeSub" />
+        <AssetsPage
+          hide-nav
+          :project-id="projectId"
+          :project-name="projectName"
+          :app-id="appId"
+          :section="activeSub"
+          @open-session-log="onOpenSessionLog"
+        />
       </div>
 
       <div v-else class="ws-config">
@@ -1512,6 +1582,21 @@ watch(selectedCaseIds, () => {
 
     <el-dialog v-model="newRunVisible" :title="runDialogTitle" width="720px" append-to-body align-center class="new-run-dialog mo-fit-dialog">
       <div class="form">
+        <div v-if="runEnvironments.length" class="field">
+          <label>运行环境</label>
+          <el-select v-model="runForm.env_profile" style="width:100%" teleported filterable>
+            <el-option
+              v-for="e in runEnvironments"
+              :key="e.key"
+              :label="e.label ? `${e.label} (${e.key})` : e.key"
+              :value="e.key"
+            />
+          </el-select>
+          <div class="hint">来自「配置 → 环境配置」；本批次租号、包名 / Bundle 按所选环境读取。</div>
+        </div>
+        <div v-else class="field">
+          <div class="hint warn">未加载到项目环境，请先在「配置 → 环境配置」中维护环境列表。</div>
+        </div>
         <div class="field">
           <label>设备（可多选；不选则由测试工程师按用例申请）</label>
           <el-select

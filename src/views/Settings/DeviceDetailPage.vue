@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Cellphone, Refresh, Monitor, Clock } from '@element-plus/icons-vue'
-import { getDeviceList, setDevicePassword } from '@/api/device'
+import { getDeviceList, setDevicePassword, enableAdbKeyboard, disableAdbKeyboard } from '@/api/device'
 import { wsGetDeviceList } from '@/api/wsAppGraph'
 import { displayDeviceSn, formatDeviceStatus, formatDeviceType, isDeviceOnline } from '@/utils/deviceDisplay'
 import { formatRelativeTime } from '@/utils/relativeTime'
@@ -17,6 +17,7 @@ const loading = ref(true)
 const devices = ref([])
 const passwordDraft = ref('')
 const settingPassword = ref(false)
+const imeBusy = ref(false)
 const relativeTimeTick = ref(0)
 let relativeTimer = null
 
@@ -30,6 +31,10 @@ const device = computed(() => {
 const displaySn = computed(() => (device.value ? displayDeviceSn(device.value) : routeSn.value))
 const isOnline = computed(() => isDeviceOnline(device.value))
 const passwordConfigured = computed(() => Boolean(device.value?.password_configured))
+const isAndroid = computed(() => {
+  const t = String(device.value?.type || '').toLowerCase()
+  return ['android', 'android_direct', 'mobile'].includes(t) || t.includes('android')
+})
 
 const lastOnlineText = computed(() => {
   void relativeTimeTick.value
@@ -94,6 +99,24 @@ const savePassword = async () => {
     ElMessage.error(e?.message || '保存失败')
   } finally {
     settingPassword.value = false
+  }
+}
+
+const runImeAction = async (action) => {
+  if (!device.value?.sn) return
+  imeBusy.value = true
+  try {
+    const fn = action === 'on' ? enableAdbKeyboard : disableAdbKeyboard
+    const res = await fn(device.value.sn)
+    if (res?.code === 200) {
+      ElMessage.success(res?.msg || (action === 'on' ? '已启用 ADB Keyboard' : '已恢复'))
+    } else {
+      ElMessage.error(res?.msg || '操作失败')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '操作失败')
+  } finally {
+    imeBusy.value = false
   }
 }
 
@@ -173,6 +196,33 @@ onUnmounted(() => {
             >保存</el-button>
           </template>
         </SecretField>
+      </section>
+
+      <section v-if="isAndroid" class="settings-card">
+        <div class="panel-head">
+          <h3>Android 输入法</h3>
+          <p class="panel-desc muted">
+            针对本台 Android 被测机：跑批可启用 ADB Keyboard；手动点验时点「恢复」切回系统输入法。
+          </p>
+        </div>
+        <div class="ime-actions">
+          <el-button
+            type="primary"
+            plain
+            :loading="imeBusy"
+            :disabled="!isOnline"
+            @click="runImeAction('on')"
+          >
+            启用 ADB Keyboard
+          </el-button>
+          <el-button
+            :loading="imeBusy"
+            :disabled="!isOnline"
+            @click="runImeAction('off')"
+          >
+            恢复
+          </el-button>
+        </div>
       </section>
     </template>
   </div>
@@ -305,5 +355,16 @@ onUnmounted(() => {
   font-size: 15px;
   font-weight: 700;
   color: var(--mo-text);
+}
+
+.panel-desc {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.ime-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 </style>

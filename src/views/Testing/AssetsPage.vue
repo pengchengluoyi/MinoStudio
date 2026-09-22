@@ -1,13 +1,15 @@
 <script setup>
 import { computed, onActivated, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Hide, View } from '@element-plus/icons-vue'
 import {
   getProjectAccounts,
   getProjectAccountPoolSchema,
   getProjectAccountPoolTemplates,
-  trialProjectResources,
   getProjectDeviceAppSessions,
+  getProjectResourceAllocationLogs,
+  restoreProjectAccountFromResourceLog,
   createProjectAccount,
   deleteProjectAccount,
   patchProjectAccount,
@@ -40,6 +42,8 @@ import '@/views/Settings/settings-ui.css'
 
 defineOptions({ name: 'AssetsPage' })
 
+const route = useRoute()
+
 const props = defineProps({
   projectId: { type: String, default: '' },
   projectName: { type: String, default: '' },
@@ -48,28 +52,43 @@ const props = defineProps({
   section: { type: String, default: '' },
 })
 
+const emit = defineEmits(['open-session-log'])
+
+const openResourceSessionLog = (row) => {
+  const sid = String(row?.session_id || row?.detail?.session_id || '').trim()
+  if (!sid) {
+    ElMessage.info('该条尚无 Session 轨迹（多为 run 级租号或 session 未落盘）')
+    return
+  }
+  emit('open-session-log', sid)
+}
+
 const TABS = [
   { id: 'accounts', label: '账号管理', desc: '号池状态与租约' },
-  { id: 'trial', label: '试筛资源', desc: '前置 → Claim + 选号 + 机态缺口' },
+  { id: 'logs', label: '资源日志', desc: '租号 / 模板变更 / 可恢复快照' },
   { id: 'device-apps', label: '机态 App', desc: '设备 × 包名登录登记' },
 ]
 
 const tab = ref(
-  props.section === 'trial' || props.section === 'device-apps' ? props.section : 'accounts',
+  props.section === 'logs' || props.section === 'device-apps'
+    ? props.section
+    : props.section === 'trial'
+      ? 'logs'
+      : 'accounts',
 )
 const pageTitle = computed(() => {
   if (!props.hideNav) return '测试资源'
-  if (tab.value === 'trial') return '试筛资源'
+  if (tab.value === 'logs') return '资源日志'
   if (tab.value === 'device-apps') return '机态 App'
   return '账号管理'
 })
 watch(() => props.section, (s) => {
-  if (s === 'trial' || s === 'accounts' || s === 'device-apps') tab.value = s
+  if (s === 'trial' || s === 'logs') tab.value = 'logs'
+  else if (s === 'accounts' || s === 'device-apps') tab.value = s
 })
 
 const loading = ref(false)
 const saving = ref(false)
-const picking = ref(false)
 const accounts = ref([])
 const environments = ref([])
 const poolTemplates = ref([])
@@ -77,16 +96,60 @@ const poolFieldDefs = ref([])
 const envFilter = ref('')
 const leaseFilter = ref('')
 const search = ref('')
-const trialEnv = ref('')
-const prompt = ref('')
-const ranked = ref([])
-const pickRequirements = ref(null)
-const trialSn = ref('')
-const trialPackage = ref('')
-const deviceAppGaps = ref([])
-const trialPackageResolved = ref('')
 const deviceSessions = ref([])
 const deviceSnFilter = ref('')
+const resourceLogs = ref([])
+const logTotal = ref(0)
+const logPage = ref(1)
+const logPageSize = ref(20)
+const logFilters = ref({
+  run_id: '',
+  case_id: '',
+  action: '',
+  account_ident: '',
+  sn: '',
+  env: '',
+})
+const LOG_ACTIONS = [
+  { value: '', label: '全部操作' },
+  { value: 'lease_claim', label: '租号成功' },
+  { value: 'lease_release', label: '释放租约' },
+  { value: 'lease_fail', label: '租号失败' },
+  { value: 'facet_update', label: '模板状态变更' },
+  { value: 'facet_restore', label: '从日志恢复' },
+]
+const RESTORABLE_LOG_ACTIONS = new Set(['facet_update', 'facet_restore'])
+
+/** 与 GET /project/env 一致：字段可能在 data 下，也可能被扁平一层 */
+const unwrapApiPayload = (res) => {
+  if (!res || typeof res !== 'object') return {}
+  const inner = res.data
+  if (inner && typeof inner === 'object' && !Array.isArray(inner)) return inner
+  return res
+}
+
+const unwrapLogListPayload = (res) => {
+  const payload = unwrapApiPayload(res)
+  return {
+    items: Array.isArray(payload.items) ? payload.items : [],
+    total: Number(payload.total || 0),
+  }
+}
+
+/** 是否含可恢复快照（facets 或参数字段任一即可） */
+const canRestoreResourceLog = (row) => {
+  if (!row?.id || !RESTORABLE_LOG_ACTIONS.has(String(row.action || ''))) return false
+  const detail = row.detail
+  if (!detail || typeof detail !== 'object') return false
+  const recover = detail.recover
+  if (!recover || typeof recover !== 'object') return false
+  if (String(detail.schema || '') === 'account_template_state_v1') return true
+  const facets = recover.facets
+  if (facets && typeof facets === 'object' && Object.keys(facets).length) return true
+  const fields = recover.fields
+  if (fields && typeof fields === 'object' && Object.keys(fields).length) return true
+  return Boolean(recover.account_id)
+}
 const dialogOpen = ref(false)
 const poolLocalOpen = ref(false)
 const importOpen = ref(false)
@@ -97,10 +160,12 @@ const importPreviewing = ref(false)
 const importCommitting = ref(false)
 const importMode = ref('paste')
 const importFile = ref(null)
+const importDefaultEnv = ref('test')
+const envDefaultProfile = ref('test')
 
-const IMPORT_SAMPLE = `手机号,展示名,登录态,备注
-13800000001,测试账号A,logged_out,
-13800000002,测试账号B,guest,批量导入示例`
+const IMPORT_SAMPLE = `手机号,展示名,登录态,环境,备注
+13800000001,测试账号A,logged_out,test,
+13800000002,测试账号B,guest,pre,批量导入示例`
 
 const importStats = computed(() => importPreview.value?.stats || {})
 const importPreviewRows = computed(() => importPreview.value?.preview || [])
@@ -167,10 +232,6 @@ const pagedAccountRows = computed(() =>
   slicePage(visibleRows.value, accountPage.value, accountPageSize.value),
 )
 
-const trialPage = ref(1)
-const trialPageSize = ref(20)
-const pagedRanked = computed(() => slicePage(ranked.value, trialPage.value, trialPageSize.value))
-
 const devicePage = ref(1)
 const devicePageSize = ref(20)
 const pagedDeviceSessions = computed(() =>
@@ -183,16 +244,8 @@ const pagedImportPreviewRows = computed(() =>
   slicePage(importPreviewRows.value, importPreviewPage.value, importPreviewPageSize.value),
 )
 
-const isTopRankedRow = (row) => {
-  const top = ranked.value[0]
-  return top && String(top.id) === String(row.id)
-}
-
 watch([search, envFilter, leaseFilter], () => {
   accountPage.value = 1
-})
-watch(ranked, () => {
-  trialPage.value = 1
 })
 watch(deviceSessions, () => {
   devicePage.value = 1
@@ -205,8 +258,10 @@ const formFieldDefs = computed(() => extensionFieldDefs(poolFieldDefs.value))
 const projectExtensionDefs = computed(() =>
   projectOnlyFieldDefs(poolFieldDefs.value, poolTemplates.value),
 )
-const chosen = computed(() => ranked.value[0] || null)
 const statusRows = (row) => statusDisplayRows(row, templateFieldDefsForRow(row, poolFieldDefs.value))
+
+const formatLogTime = (ts) => (ts ? String(ts).replace('T', ' ').slice(0, 19) : '—')
+const actionLabel = (action) => LOG_ACTIONS.find((a) => a.value === action)?.label || action || '—'
 
 const loadTemplates = async () => {
   if (!props.projectId) return
@@ -218,17 +273,29 @@ const loadTemplates = async () => {
   }
 }
 
+const resolvePoolFieldDefs = (schemaRes, accRes) => {
+  const schema = unwrapApiPayload(schemaRes)
+  const acc = unwrapApiPayload(accRes)
+  const fromSchema = schema.pool_field_defs
+  if (Array.isArray(fromSchema) && fromSchema.length) return fromSchema
+  const fromAccounts = acc.pool_field_defs
+  if (Array.isArray(fromAccounts) && fromAccounts.length) return fromAccounts
+  return Array.isArray(fromSchema) ? fromSchema : (Array.isArray(fromAccounts) ? fromAccounts : [])
+}
+
 const load = async () => {
   if (!props.projectId) return
   loading.value = true
   try {
     const [accRes, schemaRes] = await Promise.all([
       getProjectAccounts(props.projectId),
-      getProjectAccountPoolSchema(props.projectId),
+      getProjectAccountPoolSchema(props.projectId).catch(() => null),
     ])
-    accounts.value = accRes?.data?.accounts || []
-    poolFieldDefs.value = schemaRes?.data?.pool_field_defs || []
-    environments.value = accRes?.data?.environments || []
+    const accPayload = unwrapApiPayload(accRes)
+    accounts.value = accPayload.accounts || []
+    poolFieldDefs.value = resolvePoolFieldDefs(schemaRes, accRes)
+    environments.value = accPayload.environments || []
+    envDefaultProfile.value = String(accRes?.data?.default_profile || environments.value[0]?.key || 'test')
     if (envFilter.value && !environments.value.some((e) => e.key === envFilter.value)) envFilter.value = ''
     await loadTemplates()
   } catch (e) {
@@ -238,7 +305,19 @@ const load = async () => {
   }
 }
 
+const pickImportDefaultEnv = () => {
+  const keys = environments.value.map((e) => e.key)
+  const fromFilter = envFilter.value && keys.includes(envFilter.value) ? envFilter.value : ''
+  const base = fromFilter || envDefaultProfile.value || keys[0] || 'test'
+  importDefaultEnv.value = keys.includes(base) ? base : (keys[0] || base)
+}
+
 const openImport = () => {
+  if (!environments.value.length) {
+    ElMessage.warning('先在「配置 → 环境配置」里添加环境')
+    return
+  }
+  pickImportDefaultEnv()
   importText.value = ''
   importPreview.value = null
   importDup.value = 'merge'
@@ -257,7 +336,7 @@ const onImportFileChange = (uploadFile) => {
 const buildImportFormData = () => {
   const fd = new FormData()
   fd.append('file', importFile.value)
-  fd.append('default_env', envFilter.value || 'test')
+  fd.append('default_env', importDefaultEnv.value || envDefaultProfile.value || 'test')
   fd.append('on_duplicate', importDup.value)
   return fd
 }
@@ -299,7 +378,7 @@ const runImportPreview = async () => {
         ? await previewProjectAccountsImportFile(props.projectId, buildImportFormData())
         : await previewProjectAccountsImport(props.projectId, {
             text: importText.value,
-            default_env: envFilter.value || 'test',
+            default_env: importDefaultEnv.value || envDefaultProfile.value || 'test',
             on_duplicate: importDup.value,
           })
     importPreview.value = res?.data || null
@@ -334,7 +413,7 @@ const runImportCommit = async () => {
         ? await commitProjectAccountsImportFile(props.projectId, buildImportFormData())
         : await commitProjectAccountsImport(props.projectId, {
             text: importText.value,
-            default_env: envFilter.value || 'test',
+            default_env: importDefaultEnv.value || envDefaultProfile.value || 'test',
             on_duplicate: importDup.value,
           })
     const st = res?.data?.stats || {}
@@ -367,7 +446,12 @@ const openCreate = () => {
 
 const openEdit = (row) => {
   editingId.value = row.id
-  const defs = templateFieldDefsForRow(row, poolFieldDefs.value)
+  const rowDefs = templateFieldDefsForRow(row, poolFieldDefs.value)
+  const editDefs = formFieldDefs.value.length ? formFieldDefs.value : rowDefs
+  const projDefs = projectExtensionDefs.value
+  const facetDefs = editDefs.length
+    ? editDefs
+    : (projDefs.length ? projDefs : rowDefs)
   form.value = {
     env: row.env || 'test',
     display_name: row.display_name || '',
@@ -377,7 +461,7 @@ const openEdit = (row) => {
     password: row.password || '',
     otp: row.otp || '',
     health: String(row.facets?.health || 'available'),
-    facets: ensureFacetKeys(row.facets, defs),
+    facets: ensureFacetKeys(row.facets, facetDefs),
     note: row.note || '',
     locked: Boolean(row.locked),
   }
@@ -460,32 +544,63 @@ const toggleLock = async (row) => {
   }
 }
 
-const runTrial = async () => {
-  if (!prompt.value.trim()) {
-    ElMessage.warning('写一句用例前置；系统会自动识别业务模板（如购物车→电商）')
+const loadResourceLogs = async () => {
+  if (!props.projectId) return
+  loading.value = true
+  try {
+    const f = logFilters.value
+    const res = await getProjectResourceAllocationLogs(props.projectId, {
+      page: logPage.value,
+      page_size: logPageSize.value,
+      run_id: f.run_id.trim(),
+      case_id: f.case_id.trim(),
+      action: f.action,
+      account_ident: f.account_ident.trim(),
+      sn: f.sn.trim(),
+      env: f.env.trim(),
+    })
+    const { items, total } = unwrapLogListPayload(res)
+    resourceLogs.value = items
+    logTotal.value = total
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载日志失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const applyLogFilters = () => {
+  logPage.value = 1
+  loadResourceLogs()
+}
+
+const restoringLogId = ref(null)
+
+const restoreFromResourceLog = async (row) => {
+  if (!props.projectId || !row?.id) return
+  if (!canRestoreResourceLog(row)) {
+    ElMessage.warning('该条日志没有可恢复快照（需 Nexus 新版本产生的「模板状态变更」记录）')
     return
   }
-  picking.value = true
-  ranked.value = []
-  pickRequirements.value = null
-  deviceAppGaps.value = []
-  trialPackageResolved.value = ''
   try {
-    const res = await trialProjectResources(props.projectId, {
-      prompt: prompt.value,
-      env: trialEnv.value,
-      sn: trialSn.value.trim(),
-      package_id: trialPackage.value.trim(),
-    })
-    ranked.value = res?.data?.accounts || []
-    pickRequirements.value = res?.data?.requirements || null
-    deviceAppGaps.value = res?.data?.device_app_gaps || []
-    trialPackageResolved.value = res?.data?.package_id || ''
-    if (!ranked.value.length) ElMessage.info('没有满足条件的账号')
+    await ElMessageBox.confirm(
+      `将账号 ${row.account_ident || row.account_id || '—'} 的模板状态恢复为该条日志记录变更前的快照，是否继续？`,
+      '从资源日志恢复',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  restoringLogId.value = row.id
+  try {
+    await restoreProjectAccountFromResourceLog(props.projectId, row.id)
+    ElMessage.success('已恢复')
+    await loadResourceLogs()
+    if (tab.value === 'accounts') await load()
   } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '筛选失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '恢复失败')
   } finally {
-    picking.value = false
+    restoringLogId.value = null
   }
 }
 
@@ -506,21 +621,46 @@ const loadDeviceSessions = async () => {
 }
 
 watch(() => props.projectId, () => {
-  ranked.value = []
   load()
 })
 watch(
   () => props.section,
   (s) => {
     if (s === 'accounts' || s === '') load()
+    if (s === 'logs' || s === 'trial') loadResourceLogs()
     if (s === 'device-apps') loadDeviceSessions()
   },
 )
 watch(tab, (t) => {
   if (t === 'device-apps') loadDeviceSessions()
+  if (t === 'logs') loadResourceLogs()
 })
-onMounted(load)
-onActivated(load)
+watch([logPage, logPageSize], () => {
+  if (tab.value === 'logs') loadResourceLogs()
+})
+
+const applyLogRunIdFromRoute = () => {
+  const rid = String(route.query.logRunId || '').trim()
+  if (!rid) return
+  tab.value = 'logs'
+  logFilters.value.run_id = rid
+  logFilters.value.action = 'facet_update'
+  logPage.value = 1
+  loadResourceLogs()
+}
+
+watch(() => route.query.logRunId, () => applyLogRunIdFromRoute())
+
+onMounted(() => {
+  load()
+  applyLogRunIdFromRoute()
+  if (tab.value === 'logs') loadResourceLogs()
+})
+onActivated(() => {
+  load()
+  applyLogRunIdFromRoute()
+  if (tab.value === 'logs') loadResourceLogs()
+})
 </script>
 
 <template>
@@ -658,87 +798,90 @@ onActivated(load)
       </section>
     </template>
 
-    <template v-else-if="tab === 'trial'">
-      <section class="settings-card trial-hint">
-        <p>输入与<strong>用例前置</strong>相同的编号行；返回 Claim 编译约束、首选账号与机态缺口（填 SN 时）。</p>
-      </section>
+    <template v-else-if="tab === 'logs'">
       <section class="settings-card pick-card">
-        <div class="pick-row">
-          <el-select v-model="trialEnv" placeholder="环境" clearable style="width: 110px">
-            <el-option v-for="e in environments" :key="e.key" :label="e.label" :value="e.key" />
+        <div class="pick-row log-filters">
+          <el-input v-model="logFilters.run_id" placeholder="任务 run_id" clearable style="max-width: 180px" />
+          <el-input v-model="logFilters.case_id" placeholder="用例 case_id" clearable style="max-width: 160px" />
+          <el-input v-model="logFilters.sn" placeholder="设备 SN" clearable style="max-width: 140px" />
+          <el-input v-model="logFilters.account_ident" placeholder="账号" clearable style="max-width: 140px" />
+          <el-select v-model="logFilters.action" placeholder="操作" clearable style="width: 120px">
+            <el-option v-for="a in LOG_ACTIONS" :key="a.value || 'all'" :label="a.label" :value="a.value" />
           </el-select>
-          <el-input v-model="trialSn" placeholder="设备 SN（可选）" style="max-width: 140px" />
-          <el-input v-model="trialPackage" placeholder="包名（可选）" style="max-width: 160px" />
-          <el-input v-model="prompt" placeholder="1. 登录态：未登录 …" @keyup.enter="runTrial" />
-          <el-button type="primary" :loading="picking" @click="runTrial">试筛</el-button>
+          <el-input v-model="logFilters.env" placeholder="环境" clearable style="width: 90px" />
+          <el-button type="primary" @click="applyLogFilters">筛选</el-button>
+          <el-button @click="logFilters.action = 'facet_update'; applyLogFilters()">仅模板变更</el-button>
+          <el-button @click="loadResourceLogs">刷新</el-button>
         </div>
-        <p v-if="pickRequirements?.all?.length" class="filter-hint pick-req-hint">
-          编译约束：
-          <code>{{ (pickRequirements.all || []).map((c) => `${c.facet} ${c.op} ${c.value}`).join(' · ') }}</code>
+        <p class="filter-hint">
+          记录跑批租号、释放、<strong>模板状态变更</strong>与恢复。带 Session 的条目可点「轨迹」跳到 Session Log（事件类型 <code>resource/account</code>）。
+          「恢复」列在<strong>操作</strong>右侧；点<strong>仅模板变更</strong>筛 facet 类日志。
         </p>
-        <p v-if="trialPackageResolved" class="filter-hint">包名：{{ trialPackageResolved }}</p>
-        <ul v-if="deviceAppGaps.length" class="gap-list">
-          <li v-for="(g, i) in deviceAppGaps" :key="i">{{ g }}</li>
-        </ul>
+        <p v-if="resourceLogs.length && !resourceLogs.some((r) => r.action === 'facet_update')" class="filter-hint log-restore-hint">
+          本页暂无「模板状态变更」记录，恢复按钮仅对该类日志显示为可点。
+        </p>
       </section>
-
-      <section v-if="tab === 'trial' && chosen" class="settings-card chosen-card">
-        <div class="chosen-grid">
-          <div>
-            <div class="settings-kicker">系统将首选</div>
-            <h3>{{ accountHeadline(chosen) }}</h3>
-            <p>{{ envLabel(chosen.env) }}</p>
-            <p class="hit">{{ chosen.reason || '—' }}</p>
-            <p class="score-line">匹配分 <strong>{{ chosen.score ?? 0 }}</strong></p>
-          </div>
-          <div>
-            <div class="preview-label">状态是否满足前置</div>
-            <TestAccountStatus :rows="statusRows(chosen)" />
-          </div>
-          <div>
-            <TestAccountLeaseBadge :badge="leaseBadge(chosen)" />
-          </div>
-        </div>
-      </section>
-
       <section class="settings-table-card is-fill">
         <div class="table-fill">
-        <el-table :data="pagedRanked" size="small" border stripe height="100%" row-key="id" empty-text="写前置后点试筛">
-          <el-table-column label="#" width="48">
-            <template #default="{ $index }">
-              {{ (trialPage - 1) * trialPageSize + $index + 1 }}
-            </template>
-          </el-table-column>
-          <el-table-column label="账号" min-width="140">
-            <template #default="{ row }">
-              {{ accountHeadline(row) }}
-              <em v-if="isTopRankedRow(row)" class="pick-em">首选</em>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" min-width="220">
-            <template #default="{ row }">
-              <TestAccountStatus :rows="statusRows(row)" compact />
-            </template>
-          </el-table-column>
-          <el-table-column label="分" width="56" align="center">
-            <template #default="{ row }">{{ row.score ?? 0 }}</template>
-          </el-table-column>
-          <el-table-column label="说明" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span class="hit">{{ row.reason || '—' }}</span>
-            </template>
-          </el-table-column>
-        </el-table>
+          <el-table :data="resourceLogs" size="small" border stripe height="100%" empty-text="暂无资源日志（跑批租号后会出现）">
+            <el-table-column label="时间" width="168">
+              <template #default="{ row }">{{ formatLogTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="108">
+              <template #default="{ row }">{{ actionLabel(row.action) }}</template>
+            </el-table-column>
+            <el-table-column label="恢复" width="72" align="center">
+              <template #default="{ row }">
+                <el-tooltip
+                  v-if="RESTORABLE_LOG_ACTIONS.has(row.action) && !canRestoreResourceLog(row)"
+                  content="无快照（需 Nexus 新版本写入的模板变更日志）"
+                  placement="top"
+                >
+                  <span class="muted">—</span>
+                </el-tooltip>
+                <el-button
+                  v-else-if="canRestoreResourceLog(row)"
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="restoringLogId === row.id"
+                  @click="restoreFromResourceLog(row)"
+                >
+                  恢复
+                </el-button>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="env" label="环境" width="64" />
+            <el-table-column prop="run_id" label="任务" min-width="108" show-overflow-tooltip />
+            <el-table-column prop="case_id" label="用例" min-width="100" show-overflow-tooltip />
+            <el-table-column prop="sn" label="设备" width="108" show-overflow-tooltip />
+            <el-table-column prop="account_ident" label="账号" width="108" show-overflow-tooltip />
+            <el-table-column prop="message" label="说明" min-width="140" show-overflow-tooltip />
+            <el-table-column label="Session" width="88" align="center">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.session_id || row.detail?.session_id"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="openResourceSessionLog(row)"
+                >
+                  轨迹
+                </el-button>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
         <el-pagination
-          v-if="ranked.length"
           class="settings-table-pager"
           background
-          layout="total, sizes, prev, pager, next"
-          :total="ranked.length"
+          layout="total, sizes, prev, pager, next, jumper"
+          :total="logTotal"
           :page-sizes="TABLE_PAGE_SIZES"
-          v-model:page-size="trialPageSize"
-          v-model:current-page="trialPage"
+          v-model:page-size="logPageSize"
+          v-model:current-page="logPage"
         />
       </section>
     </template>
@@ -749,7 +892,9 @@ onActivated(load)
           <el-input v-model="deviceSnFilter" placeholder="按 SN 过滤" clearable style="max-width: 200px" />
           <el-button @click="loadDeviceSessions">刷新</el-button>
         </div>
-        <p class="filter-hint">跑批清缓存 / inspect / 登录流块会写入登记簿；可在此核对机态。</p>
+        <p class="filter-hint">
+          跑批清缓存 / inspect / 登录流块会写入登记簿。占位行表示尚未观测；会话「未知」需跑带 inspect 的用例才会更新。
+        </p>
       </section>
       <section class="settings-table-card is-fill">
         <div class="table-fill">
@@ -762,10 +907,21 @@ onActivated(load)
               <el-tag :type="row.registered ? 'success' : 'info'" size="small">{{ row.registered ? '已观测' : '占位' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="session" label="会话" width="100" />
+          <el-table-column label="会话" width="120">
+            <template #default="{ row }">{{ row.session_display || row.session || '—' }}</template>
+          </el-table-column>
           <el-table-column prop="bound_account_id" label="绑定账号" width="120" show-overflow-tooltip />
-          <el-table-column prop="app_version" label="版本" width="88" />
-          <el-table-column prop="identity_hint" label="身份摘要" min-width="120" show-overflow-tooltip />
+          <el-table-column label="版本" width="100" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span :class="{ 'text-warn': row.app_version_bad }">{{ row.app_version_display || row.app_version || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="身份摘要" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.identity_display || row.identity_hint || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="机态备注" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.stale_note || '—' }}</template>
+          </el-table-column>
           <el-table-column prop="observed_at" label="观测时间" width="160" />
         </el-table>
         </div>
@@ -870,8 +1026,15 @@ onActivated(load)
       destroy-on-close
     >
       <p class="filter-hint">
-        支持上传 <strong>.xlsx / .csv</strong> 或粘贴表格；首行为表头。列名：手机号、邮箱、展示名、密码、登录态、备注及项目扩展字段中文名。
+        支持上传 <strong>.xlsx / .csv</strong> 或粘贴表格；首行为表头。列名：手机号、邮箱、展示名、密码、登录态、<strong>环境</strong>、备注及项目扩展字段中文名。
+        未填「环境」列的账号归入下方所选默认环境。
       </p>
+      <div class="pick-row" style="margin-bottom: 10px; flex-wrap: wrap; gap: 8px; align-items: center">
+        <span class="filter-hint" style="margin: 0">默认环境</span>
+        <el-select v-model="importDefaultEnv" style="width: 160px" @change="importPreview = null">
+          <el-option v-for="e in environments" :key="e.key" :label="e.label || e.key" :value="e.key" />
+        </el-select>
+      </div>
       <el-radio-group v-model="importMode" style="margin-bottom: 10px">
         <el-radio-button value="paste">粘贴</el-radio-button>
         <el-radio-button value="file">上传文件</el-radio-button>
@@ -929,6 +1092,9 @@ onActivated(load)
         <el-table-column label="展示名" min-width="100">
           <template #default="{ row }">{{ row.incoming?.display_name || '—' }}</template>
         </el-table-column>
+        <el-table-column label="环境" width="88">
+          <template #default="{ row }">{{ envLabel(row.incoming?.env) }}</template>
+        </el-table-column>
         <el-table-column label="说明" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">{{ row.error || row.reason || row.account_id || '—' }}</template>
         </el-table-column>
@@ -982,6 +1148,10 @@ onActivated(load)
   flex: 1;
   min-height: 0;
 }
+.log-restore-hint {
+  color: var(--el-color-warning-dark-2, #b45309);
+  margin-top: 4px;
+}
 .page-lead {
   margin: 0;
   font-size: 13px;
@@ -1028,6 +1198,15 @@ onActivated(load)
 .stat-warn .stat-num { color: #b91c1c; }
 
 .pick-card { margin-bottom: 8px; }
+.log-filters {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.text-warn {
+  color: var(--el-color-warning);
+}
+
 .pick-row {
   display: flex;
   gap: 8px;

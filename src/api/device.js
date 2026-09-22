@@ -25,3 +25,17 @@ export const setDevicePassword = (data) => {
     data
   })
 }
+
+export const enableAdbKeyboard = (sn) => {
+  return request({
+    url: `/device/${encodeURIComponent(sn)}/ime/adbkeyboard`,
+    method: 'post'
+  })
+}
+
+export const disableAdbKeyboard = (sn) => {
+  return request({
+    url: `/device/${encodeURIComponent(sn)}/ime/system`,
+    method: 'post'
+  })
+}

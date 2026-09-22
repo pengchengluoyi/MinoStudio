@@ -112,6 +112,29 @@ export const patchProjectAccount = (projectId, accountId, payload) => {
     })
 }
 
+export const patchProjectAccountTemplateState = (projectId, accountId, payload) => {
+    return request({
+        url: `/project/${projectId}/accounts/${accountId}/template-state`,
+        method: 'patch',
+        data: payload,
+    })
+}
+
+export const patchTaskAccountTemplateState = (taskId, payload) => {
+    return request({
+        url: `/case-runner/tasks/${taskId}/account-template-state`,
+        method: 'patch',
+        data: payload,
+    })
+}
+
+export const restoreProjectAccountFromResourceLog = (projectId, logId) => {
+    return request({
+        url: `/project/${projectId}/resource-allocation-logs/${logId}/restore`,
+        method: 'post',
+    })
+}
+
 export const createProjectAccount = (projectId, payload) => {
     return request({
         url: `/project/${projectId}/accounts`,
@@ -177,11 +200,11 @@ export const pickProjectAccounts = (projectId, { prompt = '', env = '', surface 
     })
 }
 
-export const trialProjectResources = (projectId, { prompt = '', env = 'test', sn = '', package_id = '', app_id = '' } = {}) => {
+export const getProjectResourceAllocationLogs = (projectId, params = {}) => {
     return request({
-        url: `/project/${projectId}/resource-trial`,
-        method: 'post',
-        data: { prompt, env, sn, package_id, app_id },
+        url: `/project/${projectId}/resource-allocation-logs`,
+        method: 'get',
+        params,
     })
 }
 
@@ -214,6 +237,26 @@ export const saveProjectAccountPoolLocal = (projectId, { templates = [], extensi
         data: { templates, extension_addons },
     })
 }
+
+export const saveProjectPoolLocalTemplate = (projectId, templateId, template) =>
+    request({
+        url: `/project/${projectId}/account-pool-local/templates/${encodeURIComponent(templateId)}`,
+        method: 'put',
+        data: { template },
+    })
+
+export const saveProjectPoolBuiltinFields = (projectId, templateId, fields) =>
+    request({
+        url: `/project/${projectId}/account-pool-local/builtin/${encodeURIComponent(templateId)}/fields`,
+        method: 'put',
+        data: { fields },
+    })
+
+export const deleteProjectPoolLocalTemplate = (projectId, templateId) =>
+    request({
+        url: `/project/${projectId}/account-pool-local/templates/${encodeURIComponent(templateId)}`,
+        method: 'delete',
+    })
 
 export const allocateProjectAccount = (projectId, { template_id, env = '', requirements = null } = {}) => {
     return request({
