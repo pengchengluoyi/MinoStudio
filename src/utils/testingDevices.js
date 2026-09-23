@@ -27,7 +27,43 @@ export function isLegacyWebSlot(sn) {
   return s === 'web-local' || s === 'web_local'
 }
 
+/** 单 Scout 节点 Web Playwright 并行上限（与 Nexus / Scout 一致） */
+export const WEB_PLAYWRIGHT_PARALLEL_MAX = 4
+
 /** Playwright slot: `web` + scout_id. Leftover `web-local` is recognized only to hide it. */
+export function isWebSlotDevice(device) {
+  const sn = String(device?.sn || '')
+  const type = String(device?.device_type || device?.type || device?.platform || '')
+  return isWebSlot(sn, type)
+}
+
+/** Android/iOS 独占 busy；Web 槽允许多 run 并行至 web_parallel_max。 */
+export function deviceWebParallelMax(device) {
+  const n = Number(device?.web_parallel_max)
+  return n > 0 ? n : WEB_PLAYWRIGHT_PARALLEL_MAX
+}
+
+export function deviceWebParallelActive(device) {
+  return Number(device?.active_run_count || 0)
+}
+
+export function deviceWebParallelFull(device) {
+  if (!isWebSlotDevice(device)) return false
+  if (device.web_parallel_full) return true
+  return deviceWebParallelActive(device) >= deviceWebParallelMax(device)
+}
+
+export function formatWebParallelUsage(device) {
+  if (!isWebSlotDevice(device)) return ''
+  return `${deviceWebParallelActive(device)}/${deviceWebParallelMax(device)} 路`
+}
+
+export function deviceRunBlockedByBusy(device) {
+  if (deviceWebParallelFull(device)) return true
+  if (!device?.busy_task_id) return false
+  return !isWebSlotDevice(device)
+}
+
 function isWebSlot(sn, type) {
   const s = String(sn || '').toLowerCase()
   const t = String(type || '').toLowerCase()
@@ -130,8 +166,16 @@ export function formatDeviceTag(device) {
 }
 
 export function formatDeviceOption(device) {
-  const busy = device.busy_task_id ? ` · 占用中 ${shortTaskId(device.busy_task_id)}` : ''
-  return `${formatDeviceTag(device)}${busy}`
+  let suffix = ''
+  if (isWebSlotDevice(device)) {
+    suffix = ` · 浏览器 ${formatWebParallelUsage(device)}`
+    const n = deviceWebParallelActive(device)
+    if (n > 0) suffix += `（${n} 个任务）`
+    if (deviceWebParallelFull(device)) suffix += ' · 已满'
+  } else if (deviceRunBlockedByBusy(device)) {
+    suffix = ` · 占用中 ${shortTaskId(device.busy_task_id)}`
+  }
+  return `${formatDeviceTag(device)}${suffix}`
 }
 
 export function formatDeviceMeta(device) {

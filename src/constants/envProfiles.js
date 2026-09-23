@@ -41,7 +41,7 @@ function inferKindPlatform(id, kind, platform) {
     ['web', 'web', 'web'],
   ]
   for (const [prefix, pk, pp] of prefixes) {
-    if (id === prefix || String(id).startsWith(`${prefix}-`)) return { kind: pk, platform: pp }
+    if (id === prefix || String(id).startsWith(`${prefix}-`) || String(id).startsWith(`${prefix}.`)) return { kind: pk, platform: pp }
   }
   if (['app', 'web', 'server'].includes(k)) {
     return { kind: k, platform: k === 'app' ? 'android' : k }
@@ -53,6 +53,22 @@ export function channelTitle(ch) {
   const alias = String(ch?.alias || '').trim()
   if (alias) return alias
   return String(ch?.label || ch?.id || '').trim()
+}
+
+/** 跑批 / 用例「端」唯一键：channel.id（如 web、web.cn、android） */
+export function channelSurfaceKey(ch) {
+  return String(ch?.id || '').trim()
+}
+
+/** 新建执行：设备列表按被测应用筛选用 */
+export function channelRunDeviceKind(ch) {
+  if (!ch || typeof ch !== 'object') return ''
+  const kind = String(ch.kind || '').toLowerCase()
+  const plat = String(ch.platform || '').toLowerCase()
+  if (kind === 'web' || plat === 'web') return 'web'
+  if (plat === 'ios') return 'ios'
+  if (kind === 'app' || plat === 'android') return 'android'
+  return plat || kind || ''
 }
 
 export function channelKindText(ch) {
@@ -75,7 +91,7 @@ export function normalizeChannel(raw, seen) {
   if (!id && !alias && preset && !seen.has(preset.id)) id = preset.id
   if (!id) {
     const aliasSlug = slugEnvKey(alias, '')
-    id = aliasSlug && aliasSlug !== inferred.platform ? `${inferred.platform}-${aliasSlug}` : (aliasSlug || inferred.platform)
+    id = aliasSlug && aliasSlug !== inferred.platform ? `${inferred.platform}.${aliasSlug}` : (aliasSlug || inferred.platform)
     let n = 2
     const stem = id
     while (seen.has(id)) {
@@ -88,11 +104,13 @@ export function normalizeChannel(raw, seen) {
   const field = slugEnvKey(raw?.field || preset?.field || 'value', 'value')
   let label = String(raw?.label || alias || preset?.label || id).trim() || id
   if (!alias && preset && (label === id || label === preset.id)) label = preset.label
+  const appIdentifier = String(raw?.app_identifier || '').trim() || (alias ? slugEnvKey(alias, '') : '')
   return {
     id,
     kind: inferred.kind,
     platform: inferred.platform,
     alias,
+    app_identifier: appIdentifier,
     third_party: thirdParty,
     label: alias || label,
     field: field || preset?.field || 'value',
@@ -106,35 +124,98 @@ export const DEFAULT_ENVIRONMENTS = [
   { key: 'prod', label: '正式' },
 ]
 
+const OTP_MODES = new Set(['auto', 'fixed', 'gmail', 'hitl'])
+const LOGIN_MODES = new Set(['auto', 'pool', 'hitl'])
+const LOGIN_KINDS = new Set(['phone', 'email'])
+
+function migrateMode(mode, allowed, fallback = 'auto') {
+  const m = String(mode || '').trim().toLowerCase()
+  if (m === 'adapter') return 'hitl'
+  return allowed.has(m) ? m : fallback
+}
+
 export function emptyEnvSecrets() {
   return {
-    otp: { mode: 'auto', fixed: '', adapter: 'http', adapter_url: '', adapter_header: '' },
-    phone: { mode: 'auto', adapter: 'http', adapter_url: '', adapter_header: '' },
+    otp: {
+      mode: 'auto',
+      fixed: '',
+      from_allowlist: [],
+      subject_contains: '',
+      poll_interval_ms: 3000,
+      max_wait_ms: 90000,
+    },
+    login: { mode: 'auto', kind: 'phone' },
+    phone: { mode: 'auto' },
   }
 }
 
 export function normalizeEnvSecrets(raw) {
   const src = raw && typeof raw === 'object' ? raw : {}
-  const base = emptyEnvSecrets()
   const otp = src.otp && typeof src.otp === 'object' ? src.otp : {}
-  const phone = src.phone && typeof src.phone === 'object' ? src.phone : {}
-  const otpMode = ['auto', 'fixed', 'adapter', 'hitl'].includes(String(otp.mode || '')) ? otp.mode : 'auto'
-  const phoneMode = ['auto', 'pool', 'adapter', 'hitl'].includes(String(phone.mode || '')) ? phone.mode : 'auto'
+  const loginSrc = src.login && typeof src.login === 'object'
+    ? src.login
+    : { mode: src.phone?.mode, kind: src.login_kind }
+  const otpMode = migrateMode(otp.mode, OTP_MODES)
+  const loginMode = migrateMode(loginSrc.mode, LOGIN_MODES)
+  const loginKind = LOGIN_KINDS.has(String(loginSrc.kind || '').toLowerCase())
+    ? String(loginSrc.kind).toLowerCase()
+    : 'phone'
+  let allow = otp.from_allowlist
+  if (typeof allow === 'string') {
+    allow = allow.split(',').map((s) => s.trim()).filter(Boolean)
+  }
+  if (!Array.isArray(allow)) allow = []
   return {
     otp: {
-      ...base.otp,
       mode: otpMode,
       fixed: String(otp.fixed || '').slice(0, 32),
-      adapter_url: String(otp.adapter_url || '').slice(0, 400),
-      adapter_header: String(otp.adapter_header || '').slice(0, 240),
+      from_allowlist: allow.slice(0, 20).map((s) => String(s).slice(0, 120)),
+      subject_contains: String(otp.subject_contains || '').slice(0, 120),
+      poll_interval_ms: Math.min(30000, Math.max(1000, Number(otp.poll_interval_ms) || 3000)),
+      max_wait_ms: Math.min(180000, Math.max(5000, Number(otp.max_wait_ms) || 90000)),
     },
-    phone: {
-      ...base.phone,
-      mode: phoneMode,
-      adapter_url: String(phone.adapter_url || '').slice(0, 400),
-      adapter_header: String(phone.adapter_header || '').slice(0, 240),
-    },
+    login: { mode: loginMode, kind: loginKind },
+    phone: { mode: loginMode },
   }
+}
+
+export function normalizeGmailInbox(raw) {
+  let addr = ''
+  if (raw && typeof raw === 'object') {
+    addr = raw.address
+    if (addr && typeof addr === 'object') addr = addr.address
+    addr = String(addr ?? '').trim()
+  } else {
+    addr = String(raw || '').trim()
+  }
+  if (addr.startsWith('{') && addr.includes('address')) {
+    try {
+      const parsed = JSON.parse(addr.replace(/'/g, '"'))
+      if (parsed && typeof parsed === 'object') {
+        addr = String(parsed.address || '').trim()
+      }
+    } catch {
+      /* keep literal */
+    }
+  }
+  return { address: addr.slice(0, 120) }
+}
+
+export function normalizeChannelSecrets(raw, channelIds, envKeys) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  const chSet = new Set(channelIds || [])
+  const envSet = new Set(envKeys || [])
+  const out = {}
+  for (const [cid, perEnv] of Object.entries(src)) {
+    if (!chSet.has(cid) || !perEnv || typeof perEnv !== 'object') continue
+    const row = {}
+    for (const [ek, slot] of Object.entries(perEnv)) {
+      if (!envSet.has(ek) || slot == null || typeof slot !== 'object') continue
+      row[ek] = normalizeEnvSecrets(slot)
+    }
+    if (Object.keys(row).length) out[cid] = row
+  }
+  return out
 }
 
 const KEY_RE = /[^a-z0-9_-]+/g
@@ -229,12 +310,15 @@ export function normalizeEnvDoc(raw) {
     }
   }
 
+  const envKeyList = environments.map((e) => e.key)
   return {
     default_profile: defaultProfile,
     environments,
     channels,
     pipeline,
     profiles,
+    gmail_inbox: normalizeGmailInbox(src.gmail_inbox),
+    channel_secrets: normalizeChannelSecrets(src.channel_secrets, channels.map((c) => c.id), envKeyList),
   }
 }
 
@@ -337,6 +421,70 @@ export function envSummaries(docOrProfiles) {
 export function pipelineKeys(docOrProfiles) {
   const doc = normalizeEnvDoc(docOrProfiles)
   return doc.pipeline.length ? doc.pipeline : doc.environments.map((e) => e.key)
+}
+
+const PRIMARY_CHANNEL_IDS = new Set(['android', 'ios', 'web', 'server', 'pc', 'mac'])
+
+/** 简称 → 应用标识（仅保留英文、数字与下划线） */
+export function appIdentifierFromAlias(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  return raw
+    .replace(/[\s\-·]+/g, '_')
+    .replace(/[^a-zA-Z0-9_]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .toLowerCase()
+    .slice(0, 32)
+}
+
+export function channelAppIdentifier(ch) {
+  const stored = String(ch?.app_identifier || '').trim()
+  if (stored) return stored
+  const id = String(ch?.id || '')
+  if (id.includes('.')) {
+    const parts = id.split('.')
+    if (parts.length >= 2 && PRIMARY_CHANNEL_IDS.has(parts[0])) return parts.slice(1).join('.')
+  }
+  const legacy = id.match(/^(android|ios|web|server|pc|mac)-(.+)$/)
+  if (legacy) return legacy[2]
+  return appIdentifierFromAlias(ch?.alias || '')
+}
+
+/** 流程占位符：web.hi3d.base_url / android.package / web.base_url */
+export function channelConfigVarKey(ch) {
+  const field = ch?.field || 'value'
+  const plat = String(ch?.platform || ch?.kind || 'web').toLowerCase()
+  const id = String(ch?.id || '')
+  if (!ch?.alias && !ch?.third_party && PRIMARY_CHANNEL_IDS.has(id)) {
+    if (id === 'android') return `android.${field}`
+    if (id === 'ios') return `ios.${field}`
+    if (id === 'web') return `web.${field}`
+    if (id === 'server') return `server.${field}`
+    return `${id}.${field}`
+  }
+  const ident = channelAppIdentifier(ch)
+  if (!ident) return `${plat}.${field}`
+  return `${plat}.${ident}.${field}`
+}
+
+export function channelConfigVar(ch) {
+  return `{{${channelConfigVarKey(ch)}}}`
+}
+
+/** 当前环境下已填写目标的渠道（跑批选应用） */
+export function channelsConfiguredInEnv(doc, envKey) {
+  const normalized = normalizeEnvDoc(doc)
+  const order = pipelineKeys(normalized)
+  const key = String(envKey || normalized.default_profile || 'test').trim()
+  return (normalized.channels || []).map((ch) => {
+    const resolved = resolveChannelValue(normalized.profiles, order, key, ch.id, ch.field)
+    return {
+      ...ch,
+      configuredValue: resolved.value,
+      inherited: resolved.inherited,
+    }
+  }).filter((row) => String(row.configuredValue || '').trim())
 }
 
 export const RUN_ENV_STORAGE_KEY = 'mo_run_env_profile'

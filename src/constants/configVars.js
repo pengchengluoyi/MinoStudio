@@ -6,7 +6,7 @@ export const CONFIG_VAR_CATALOG = [
   { key: 'app.mobile.target', label: '移动端（自动）', group: '项目环境', platforms: ['mobile'] },
   { key: 'app.android.package', label: 'Android 包名', group: '项目环境', platforms: ['android'] },
   { key: 'app.ios.bundle', label: 'iOS Bundle ID', group: '项目环境', platforms: ['ios'] },
-  { key: 'app.web.base_url', label: 'Web 根地址', group: '项目环境', platforms: ['web'] },
+  { key: 'web.base_url', label: 'Web 根地址', group: '项目环境', platforms: ['web'] },
   { key: 'device.password', label: '设备解锁密码', group: '设备', platforms: [] },
   { key: 'device.sn', label: '设备 SN', group: '设备', platforms: [] }
 ]
@@ -59,7 +59,7 @@ export function getConfigVarsForField(fieldName, platform) {
     return getMobileConfigVars(platform)
   }
   if (fieldName === 'target_web') {
-    return CONFIG_VAR_CATALOG.filter(v => v.key === 'app.web.base_url')
+    return CONFIG_VAR_CATALOG.filter(v => v.key === 'web.base_url')
   }
   if (fieldName === 'target_pc') {
     return []
@@ -71,7 +71,7 @@ const ENV_PLACEHOLDER_KEYS = new Set([
   'app.mobile.target',
   'app.android.package',
   'app.ios.bundle',
-  'app.web.base_url',
+  'web.base_url',
 ])
 
 /** 按节点 platform 返回默认项目环境占位符 */
@@ -83,7 +83,7 @@ export function getDefaultEnvVarKey(fieldName, platform) {
     if (p === 'android') return 'app.android.package'
     return null
   }
-  if (fieldName === 'target_web' && p === 'web') return 'app.web.base_url'
+  if (fieldName === 'target_web' && p === 'web') return 'web.base_url'
   return null
 }
 
@@ -94,7 +94,11 @@ export function getDefaultEnvVarValue(fieldName, platform) {
 
 export function isKnownEnvPlaceholder(val) {
   const key = parseConfigVarValue(val)
-  return key ? ENV_PLACEHOLDER_KEYS.has(key) : false
+  if (!key) return false
+  if (ENV_PLACEHOLDER_KEYS.has(key)) return true
+  if (/^(android|ios|web|server)\.[a-z0-9_]+\.(package|bundle|base_url|path|value)$/.test(key)) return true
+  if (/^(android|ios|web|server)\.(package|bundle|base_url|path)$/.test(key)) return true
+  return false
 }
 
 /** 是否应视为「跟随项目环境」（空值、或仍为环境占位符） */

@@ -1,6 +1,6 @@
 import request from '@/utils/request'
 
-export const DEFAULT_STUDIO_NAV = ['testing', 'agent', 'knowledge', 'runtime', 'scout', 'keys', 'dispatch']
+export const DEFAULT_STUDIO_NAV = ['testing', 'agent', 'knowledge', 'runtime', 'scout', 'keys', 'dispatch', 'plugins']
 
 const ENTRY_ROUTES = {
   plugins: ['/settings/plugins', '/settings/feishu'],

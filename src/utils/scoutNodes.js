@@ -28,6 +28,16 @@ export function ownershipLabel(node, { studioId = '', userId = '' } = {}) {
   return node?.owner_name || sid || owner || '未归属'
 }
 
+/** Scout 节点 Web Playwright 并行占用（Nexus `/runtime/nodes`） */
+export function webPlaywrightParallelText(node, { maxDefault = 4 } = {}) {
+  const p = node?.web_playwright_parallel
+  if (!p || !p.sn) return '—'
+  const max = Number(p.max) > 0 ? Number(p.max) : maxDefault
+  const active = Number(p.active) || 0
+  const tail = p.full || active >= max ? ' · 已满' : ''
+  return `${active}/${max} 路${tail}`
+}
+
 export function nodeActionState(
   node,
   { localScoutId = '', isElectron = false, installed = false, updateAvailable = false } = {},

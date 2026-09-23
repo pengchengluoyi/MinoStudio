@@ -256,17 +256,21 @@ const openCreateProject = () => {
   if (homeView.value !== 'manage') setHomeView('manage')
 }
 
-const openCreateApp = (project) => {
-  if (!project?.id) {
+const goProjectEnvConfig = (project) => {
+  const pid = String(project?.id || '').trim()
+  if (!pid) {
     ElMessage.warning('请先新建项目')
-    openCreateProject()
     return
   }
-  createKind.value = 'app'
-  createTargetProject.value = project
-  resetCreateForm()
-  createOpen.value = true
-  if (homeView.value !== 'manage') setHomeView('manage')
+  router.push({
+    name: 'SettingsProjectEnv',
+    params: { projectId: pid },
+    query: { name: project?.name || '' },
+  })
+}
+
+const openCreateApp = (project) => {
+  goProjectEnvConfig(project)
 }
 
 const submitCreate = async () => {
@@ -287,7 +291,8 @@ const submitCreate = async () => {
       await load()
       if (row.id) filterProjectId.value = row.id
       const project = projects.value.find((p) => p.id === row.id) || { ...row, apps: [] }
-      openCreateApp(project)
+      ElMessage.info('请在环境配置中添加应用与包名')
+      goProjectEnvConfig(project)
       return
     }
     const project = createTargetProject.value
@@ -313,7 +318,7 @@ const submitCreate = async () => {
 const openProject = (p, extra = {}) => {
   const apps = p?.apps || []
   if (!apps.length) {
-    openCreateApp(p)
+    goProjectEnvConfig(p)
     return
   }
   const preferred = apps.find((a) => runningCountByApp.value[a.id]) || apps[0]
@@ -550,7 +555,7 @@ watch(() => route.query.view, (v) => {
           <div class="project-head">
             <h3>{{ p.name }}</h3>
             <span class="sub">{{ p.apps?.length || 0 }} 个应用</span>
-            <el-button link type="primary" size="small" @click="openCreateApp(p)">添加应用</el-button>
+            <el-button link type="primary" size="small" @click="goProjectEnvConfig(p)">环境与应用</el-button>
             <el-button link type="danger" size="small" class="project-del" @click="openDeleteProject(p)">删除项目</el-button>
           </div>
           <p v-if="p.description" class="project-desc">{{ p.description }}</p>

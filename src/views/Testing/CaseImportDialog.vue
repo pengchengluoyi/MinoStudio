@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { commitCaseImport, previewCaseImport } from '@/api/projectCases'
+import { getProjectEnv } from '@/api/workReport'
 import {
   detectHeaderRow,
   FLAG_LABELS,
@@ -33,6 +34,8 @@ const defaultConflict = ref('skip')
 const submitting = ref(false)
 const parsing = ref(false)
 const fileRef = ref(null)
+const importPlatforms = ref([])
+const defaultImportPlatform = ref('')
 
 const FIELD_OPTS = [
   { key: 'case_id', label: '编号' },
@@ -64,6 +67,28 @@ const conflictCount = computed(() => previewRows.value.filter((r) => r.conflict)
 
 const headerHint = computed(() => headerLabels.value.filter(Boolean).slice(0, 8).join(' · '))
 
+const platformColumnMapped = computed(() => {
+  const v = columnMap.value.platform
+  return v !== undefined && v !== null && v !== ''
+})
+
+const platformLabelFor = (id) => {
+  const key = String(id || '').trim()
+  if (!key) return '—'
+  const hit = importPlatforms.value.find((p) => p.id === key)
+  return hit?.label || key
+}
+
+const effectivePlatform = (row) => {
+  const fromRow = String(row?.platform || row?.payload?.platform || '').trim()
+  if (fromRow) return fromRow
+  return String(defaultImportPlatform.value || '').trim()
+}
+
+const previewRowsNeedPlatform = computed(() =>
+  previewRows.value.filter((r) => r.selected && !effectivePlatform(r)),
+)
+
 const resetState = () => {
   step.value = 'file'
   tableData.value = []
@@ -75,6 +100,26 @@ const resetState = () => {
   previewRows.value = []
   previewMeta.value = {}
   defaultConflict.value = 'skip'
+  importPlatforms.value = []
+  defaultImportPlatform.value = ''
+}
+
+const loadImportPlatforms = async () => {
+  if (!props.projectId) return
+  try {
+    const res = await getProjectEnv(props.projectId)
+    const doc = res?.data?.data || res?.data || {}
+    const channels = (doc.channels || []).filter((c) => c && c.id)
+    importPlatforms.value = channels.map((c) => ({
+      id: String(c.id),
+      label: String(c.label || c.alias || c.id),
+    }))
+    if (importPlatforms.value.length && !defaultImportPlatform.value) {
+      defaultImportPlatform.value = importPlatforms.value[0].id
+    }
+  } catch {
+    importPlatforms.value = []
+  }
 }
 
 watch(
@@ -83,6 +128,7 @@ watch(
     if (!visible) return
     resetState()
     pickedReqId.value = props.requirementId || props.requirements[0]?.id || ''
+    loadImportPlatforms()
   },
 )
 
@@ -198,6 +244,10 @@ const runPreview = async () => {
     ElMessage.warning('列名行不像表头（应含「用例编号」「名称」「步骤」等）。请调整列名行或勾选跳过')
     return
   }
+  if (!platformColumnMapped.value && importPlatforms.value.length && !defaultImportPlatform.value) {
+    ElMessage.warning('未映射「端」列时，请先选择默认端')
+    return
+  }
   parsing.value = true
   try {
     const res = await previewCaseImport(props.projectId, {
@@ -206,6 +256,7 @@ const runPreview = async () => {
       header_row: headerRow.value,
       skip_rows: [...skipRows.value],
       column_map: columnMap.value,
+      default_platform: defaultImportPlatform.value,
     })
     const data = res?.data || {}
     previewToken.value = data.preview_token || ''
@@ -241,12 +292,17 @@ const submit = async () => {
     ElMessage.warning('请至少选择一条要导入的用例')
     return
   }
+  if (previewRowsNeedPlatform.value.length && !defaultImportPlatform.value) {
+    ElMessage.warning('部分用例未指定端，请在下方选择导入端')
+    return
+  }
   submitting.value = true
   try {
     const res = await commitCaseImport(props.projectId, {
       requirement_id: pickedReqId.value,
       preview_token: previewToken.value,
       default_on_conflict: defaultConflict.value,
+      default_platform: defaultImportPlatform.value,
       rows: previewRows.value.map((row) => ({
         row_index: row.row_index,
         selected: Boolean(row.selected),
@@ -311,6 +367,15 @@ const submit = async () => {
         description="下拉框应显示「用例编号」「用例名称」等，而不是 app-001、一键登录 这类数据。请把列名行改到真正的表头行，并勾选上方回归/iOS 等行「跳过」。"
         class="map-alert"
       />
+      <div v-if="importPlatforms.length" class="default-platform-row">
+        <span class="map-label">默认端</span>
+        <el-select v-model="defaultImportPlatform" placeholder="选择端" size="small" style="width: 200px">
+          <el-option v-for="p in importPlatforms" :key="p.id" :label="p.label" :value="p.id" />
+        </el-select>
+        <span class="muted">
+          {{ platformColumnMapped ? '已映射「端」列；单元格为空时用此端' : '未映射「端」列时，导入的用例将全部使用该端' }}
+        </span>
+      </div>
       <div class="map-row">
         <span v-for="opt in FIELD_OPTS" :key="opt.key" class="map-item">
           <span class="map-label">{{ opt.label }}</span>
@@ -359,8 +424,18 @@ const submit = async () => {
     </template>
 
     <template v-else>
-      <div class="toolbar">
+      <div class="toolbar preview-toolbar">
         <span class="muted">共 {{ previewRows.length }} 条<template v-if="conflictCount">，冲突 {{ conflictCount }} 条</template></span>
+        <div v-if="importPlatforms.length" class="default-platform-row is-preview">
+          <span class="map-label">导入端</span>
+          <el-select v-model="defaultImportPlatform" placeholder="选择端" size="small" style="width: 200px">
+            <el-option v-for="p in importPlatforms" :key="p.id" :label="p.label" :value="p.id" />
+          </el-select>
+          <span v-if="previewRowsNeedPlatform.length" class="muted warn-text">
+            {{ previewRowsNeedPlatform.length }} 条未填端，将统一设为该端
+          </span>
+          <span v-else class="muted">表格已带端；仅空单元格会用此默认</span>
+        </div>
         <label v-if="conflictCount">
           冲突默认
           <el-select v-model="defaultConflict" size="small" style="width: 120px" @change="applyDefaultConflict">
@@ -376,6 +451,7 @@ const submit = async () => {
               <th>导入</th>
               <th>编号</th>
               <th>名称</th>
+              <th>端</th>
               <th>前置条件</th>
               <th>步骤摘要</th>
               <th>预期摘要</th>
@@ -398,6 +474,9 @@ const submit = async () => {
               <td><el-checkbox v-model="row.selected" /></td>
               <td>{{ row.case_id || '（系统生成）' }}</td>
               <td>{{ row.name }}</td>
+              <td :class="{ 'plat-from-default': !String(row.platform || row.payload?.platform || '').trim() }">
+                {{ platformLabelFor(effectivePlatform(row)) }}
+              </td>
               <td>
                 <pre class="cell-pre">{{ row.precondition_preview }}</pre>
                 <span v-if="row.resource_claim_summary" class="claim-sum">{{ row.resource_claim_summary }}</span>
@@ -470,6 +549,32 @@ const submit = async () => {
   align-items: center;
   margin-bottom: 12px;
 }
+.default-platform-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.default-platform-row.is-preview {
+  margin-bottom: 0;
+}
+
+.preview-toolbar {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.plat-from-default {
+  color: var(--el-color-primary);
+}
+
+.warn-text {
+  color: var(--el-color-warning);
+}
+
 .map-row {
   display: flex;
   flex-wrap: wrap;

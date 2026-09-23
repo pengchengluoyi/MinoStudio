@@ -423,7 +423,8 @@ export function casePlatformKind(c) {
   const p = String(c?.platform || c?.client || c?.terminal || '').toLowerCase()
   const ios = p.includes('ios') || p.includes('苹果') || p.includes('iphone') || p.includes('ipad')
   const android = p.includes('android') || p.includes('安卓')
-  const web = p.includes('web') || p.includes('h5') || p.includes('网页') || p.includes('后台') || p.includes('浏览器')
+  const web = p === 'web' || p.startsWith('web.') || p.startsWith('web-')
+    || p.includes('web') || p.includes('h5') || p.includes('网页') || p.includes('后台') || p.includes('浏览器')
   if (p.includes('双') || p.includes('both') || (ios && android) || (web && (ios || android))) return 'any'
   if (ios) return 'ios'
   if (android) return 'android'
@@ -862,10 +863,12 @@ export function parseBusyConflict(err) {
     reservedUntil = detail.reserved_until || ''
   }
   const isReserved = status === 409 && (message === 'device reserved' || detail?.reason === 'schedule')
-  const isBusy = status === 409 && !isReserved && (message === 'device busy' || Boolean(busyTaskId))
+  const isWebParallelFull = status === 409 && message === 'web parallel full'
+  const isBusy = status === 409 && !isReserved && !isWebParallelFull && (message === 'device busy' || Boolean(busyTaskId))
   return {
     isBusy,
     isReserved,
+    isWebParallelFull,
     busyTaskId,
     message,
     status,
@@ -873,6 +876,8 @@ export function parseBusyConflict(err) {
     slotId,
     reservedTitle,
     reservedUntil,
+    webParallelActive: detail?.active,
+    webParallelMax: detail?.max,
   }
 }
 

@@ -9,7 +9,7 @@ import {
   runCaseRunner,
 } from '@/api/caseRunner'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
-import TaskResourceRestorePanel from '@/components/TaskResourceRestorePanel.vue'
+import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
 import { fetchTaskDetail, useLiveTaskRefresh } from '@/composables/useTestingTasks'
 import { getAppAutomationConfig } from '@/api/appAutomation'
 import { reviewKnowledgeItem } from '@/api/settings'
@@ -146,13 +146,12 @@ const taskResourceCard = computed(() => {
   }
   return null
 })
-const taskRestoreCaseId = computed(() => {
-  if (!isCasePage.value) return ''
-  return String(selectedCase.value?.case_id || '').trim()
-})
-
 const onOpenResourceLogs = (payload) => {
   emit('open-resource-logs', payload || { run_id: props.taskId })
+}
+
+const openResourceLogsPage = () => {
+  onOpenResourceLogs({ run_id: props.taskId })
 }
 const resourceCardRows = computed(() => {
   const card = taskResourceCard.value
@@ -799,6 +798,7 @@ const saveReview = async () => {
               type="primary"
               @click="openSessionLog"
             >Session Log</el-button>
+            <el-button size="small" text type="primary" @click="openResourceLogsPage">资源日志</el-button>
             <el-button size="small" text @click="copyRunId">复制编号</el-button>
             <el-button
               v-if="headerMeta && !headerMeta.live && selectedCase"
@@ -849,18 +849,11 @@ const saveReview = async () => {
       <p v-else-if="selectedCase && (selectedCase.status === 'cancelled' || selectedCase.status === 'skipped')" class="pending-hint">
         {{ selectedCase.summary || '该用例未执行或已取消' }}
       </p>
-      <TaskResourceRestorePanel
-        v-if="taskId"
-        compact
-        :task-id="taskId"
-        :case-id="taskRestoreCaseId"
-        @open-logs="onOpenResourceLogs"
-      />
       <div v-if="selectedCase" class="timeline-pane">
         <ExecutionTimeline
           class="tl"
-          :run-id="showTimeline ? selectedCaseRunId : ''"
-          :live="isLive && selectedCase?.status === 'running'"
+          :run-id="selectedCaseRunId"
+          :live="showTimeline && isLive && selectedCase?.status === 'running'"
           :case-summary="selectedCase?.summary || ''"
           :case-goal="headerMeta?.goal || selectedCase?.name || ''"
           :case-spec="selectedSpec"
@@ -903,6 +896,7 @@ const saveReview = async () => {
           <div class="pane-head-actions">
             <slot name="actions" />
             <el-button size="small" text @click="copyTaskId">复制任务编号</el-button>
+            <el-button size="small" text type="primary" @click="openResourceLogsPage">资源日志</el-button>
             <el-button
               v-if="task.status === 'running' || task.status === 'queued'"
               size="small"
@@ -1073,11 +1067,6 @@ const saveReview = async () => {
               </span>
             </div>
           </section>
-          <TaskResourceRestorePanel
-            v-if="taskId"
-            :task-id="taskId"
-            @open-logs="onOpenResourceLogs"
-          />
           <p class="signoff-note">
             通过＝当前屏检测成立。失败＝检测了但没过，才可能是产品红。不可做＝认不出 / 动作表外 / 这句看不了。还没测到＝红了就停或没轮到。
           </p>

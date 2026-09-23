@@ -97,6 +97,7 @@ const envFilter = ref('')
 const leaseFilter = ref('')
 const search = ref('')
 const deviceSessions = ref([])
+const deviceSessionsHint = ref('')
 const deviceSnFilter = ref('')
 const resourceLogs = ref([])
 const logTotal = ref(0)
@@ -172,6 +173,133 @@ const importPreviewRows = computed(() => importPreview.value?.preview || [])
 const editingId = ref('')
 const form = ref(emptyForm())
 const pwdOpen = ref(new Set())
+const accountTableRef = ref(null)
+const selectedAccounts = ref([])
+const bulkEditOpen = ref(false)
+const bulkFieldKey = ref('')
+const bulkFieldValue = ref('')
+const bulkFieldBool = ref(false)
+const bulkApplying = ref(false)
+
+const onAccountSelectionChange = (rows) => {
+  selectedAccounts.value = Array.isArray(rows) ? rows : []
+}
+
+const clearAccountSelection = () => {
+  selectedAccounts.value = []
+  accountTableRef.value?.clearSelection?.()
+}
+
+const bulkFieldOptions = computed(() => {
+  const opts = [
+    { key: 'env', label: '环境', kind: 'env' },
+    { key: 'display_name', label: '展示名', kind: 'text' },
+    { key: 'phone', label: '手机号', kind: 'text' },
+    { key: 'username', label: '用户名', kind: 'text' },
+    { key: 'email', label: '邮箱', kind: 'text' },
+    { key: 'password', label: '密码（覆盖）', kind: 'text', secret: true },
+    { key: 'otp', label: '验证码', kind: 'text' },
+    { key: 'health', label: '健康', kind: 'health' },
+    { key: 'note', label: '备注', kind: 'text' },
+    { key: 'locked', label: '手动占用', kind: 'bool' },
+  ]
+  const seen = new Set()
+  for (const f of formFieldDefs.value) {
+    if (seen.has(f.key)) continue
+    seen.add(f.key)
+    opts.push({ key: `facet:${f.key}`, label: f.label, kind: 'facet', def: f })
+  }
+  for (const f of projectExtensionDefs.value) {
+    if (seen.has(f.key)) continue
+    seen.add(f.key)
+    opts.push({ key: `facet:${f.key}`, label: `${f.label}（项目扩展）`, kind: 'facet', def: f })
+  }
+  return opts
+})
+
+const bulkFieldMeta = computed(() =>
+  bulkFieldOptions.value.find((o) => o.key === bulkFieldKey.value) || null,
+)
+
+const openBulkEdit = () => {
+  if (!selectedAccounts.value.length) {
+    ElMessage.warning('请先勾选要修改的账号')
+    return
+  }
+  bulkFieldKey.value = bulkFieldOptions.value[0]?.key || ''
+  bulkFieldValue.value = ''
+  bulkFieldBool.value = false
+  bulkEditOpen.value = true
+}
+
+watch(bulkFieldKey, () => {
+  bulkFieldValue.value = ''
+  bulkFieldBool.value = false
+})
+
+const buildBulkPatchPayload = () => {
+  const meta = bulkFieldMeta.value
+  const key = bulkFieldKey.value
+  if (!meta || !key) return null
+  if (meta.kind === 'bool') {
+    return { locked: Boolean(bulkFieldBool.value) }
+  }
+  if (meta.kind === 'health') {
+    const v = String(bulkFieldValue.value || '').trim()
+    if (!v) return null
+    return { facets: { health: v } }
+  }
+  if (meta.kind === 'facet') {
+    const facetKey = key.slice('facet:'.length)
+    const v = bulkFieldValue.value
+    if (v === '' || v === null || v === undefined) return null
+    return { facets: { [facetKey]: v } }
+  }
+  const v = String(bulkFieldValue.value ?? '').trim()
+  if (meta.kind === 'text' && meta.secret && !v) {
+    ElMessage.warning('请填写新密码')
+    return null
+  }
+  if (meta.kind !== 'env' && !v && key !== 'note') {
+    ElMessage.warning('请填写新值')
+    return null
+  }
+  return { [key]: v }
+}
+
+const applyBulkField = async () => {
+  const payload = buildBulkPatchPayload()
+  if (!payload) return
+  const rows = [...selectedAccounts.value]
+  if (!rows.length) return
+  const label = bulkFieldMeta.value?.label || bulkFieldKey.value
+  try {
+    await ElMessageBox.confirm(
+      `将 ${rows.length} 条账号的「${label}」批量改为所选值，是否继续？`,
+      '批量修改',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  bulkApplying.value = true
+  let ok = 0
+  let fail = 0
+  for (const row of rows) {
+    try {
+      await patchProjectAccount(props.projectId, row.id, payload)
+      ok += 1
+    } catch {
+      fail += 1
+    }
+  }
+  bulkApplying.value = false
+  bulkEditOpen.value = false
+  await load()
+  clearAccountSelection()
+  if (fail) ElMessage.warning(`完成：成功 ${ok} 条，失败 ${fail} 条`)
+  else ElMessage.success(`已更新 ${ok} 条账号`)
+}
 
 const LEASE_FILTERS = [
   { value: '', label: '全部占用' },
@@ -246,6 +374,7 @@ const pagedImportPreviewRows = computed(() =>
 
 watch([search, envFilter, leaseFilter], () => {
   accountPage.value = 1
+  clearAccountSelection()
 })
 watch(deviceSessions, () => {
   devicePage.value = 1
@@ -613,7 +742,9 @@ const loadDeviceSessions = async () => {
       app_id: props.appId || undefined,
     })
     deviceSessions.value = res?.data?.sessions || []
+    deviceSessionsHint.value = String(res?.data?.hint || '').trim()
   } catch (e) {
+    deviceSessionsHint.value = ''
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载失败')
   } finally {
     loading.value = false
@@ -724,6 +855,12 @@ onActivated(() => {
           </el-select>
           <el-button @click="poolLocalOpen = true">项目模板与字段</el-button>
           <el-button @click="openImport">批量导入</el-button>
+          <el-button
+            :disabled="!selectedAccounts.length"
+            @click="openBulkEdit"
+          >
+            批量改字段{{ selectedAccounts.length ? ` (${selectedAccounts.length})` : '' }}
+          </el-button>
           <el-button type="primary" @click="openCreate">新增账号</el-button>
         </div>
         <p class="filter-hint">
@@ -733,7 +870,18 @@ onActivated(() => {
 
       <section class="settings-table-card is-fill">
         <div class="table-fill">
-        <el-table :data="pagedAccountRows" size="small" border stripe height="100%" row-key="id" empty-text="暂无账号">
+        <el-table
+          ref="accountTableRef"
+          :data="pagedAccountRows"
+          size="small"
+          border
+          stripe
+          height="100%"
+          row-key="id"
+          empty-text="暂无账号"
+          @selection-change="onAccountSelectionChange"
+        >
+          <el-table-column type="selection" width="42" fixed reserve-selection />
           <el-table-column label="账号" min-width="168" fixed>
             <template #default="{ row }">
               <div class="id-cell">
@@ -893,8 +1041,9 @@ onActivated(() => {
           <el-button @click="loadDeviceSessions">刷新</el-button>
         </div>
         <p class="filter-hint">
-          跑批清缓存 / inspect / 登录流块会写入登记簿。占位行表示尚未观测；会话「未知」需跑带 inspect 的用例才会更新。
+          仅展示<strong>当前项目在环境配置里维护的包名</strong> × 设备；跑批清缓存 / inspect / 登录流块会写入登记簿。
         </p>
+        <p v-if="deviceSessionsHint" class="filter-hint warn">{{ deviceSessionsHint }}</p>
       </section>
       <section class="settings-table-card is-fill">
         <div class="table-fill">
@@ -1014,6 +1163,66 @@ onActivated(() => {
       <template #footer>
         <el-button @click="dialogOpen = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveForm">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="bulkEditOpen"
+      title="批量修改字段"
+      width="480px"
+      align-center
+      append-to-body
+      destroy-on-close
+    >
+      <p class="filter-hint">
+        已选 <strong>{{ selectedAccounts.length }}</strong> 条账号（表格可多选 / 表头全选当前页；翻页后已选会保留）。
+      </p>
+      <el-form label-width="88px" class="dialog-form">
+        <el-form-item label="字段" required>
+          <el-select v-model="bulkFieldKey" style="width: 100%" filterable>
+            <el-option
+              v-for="o in bulkFieldOptions"
+              :key="o.key"
+              :label="o.label"
+              :value="o.key"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="bulkFieldMeta?.kind === 'env'" label="新值" required>
+          <el-select v-model="bulkFieldValue" style="width: 100%">
+            <el-option v-for="e in environments" :key="e.key" :label="e.label || e.key" :value="e.key" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else-if="bulkFieldMeta?.kind === 'health'" label="新值" required>
+          <el-select v-model="bulkFieldValue" style="width: 100%">
+            <el-option v-for="o in ACCOUNT_HEALTH_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else-if="bulkFieldMeta?.kind === 'facet'" label="新值" required>
+          <el-select v-model="bulkFieldValue" style="width: 100%" clearable placeholder="选择模板选项">
+            <el-option
+              v-for="o in (bulkFieldMeta.def?.options || [])"
+              :key="o.value"
+              :label="o.label"
+              :value="o.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else-if="bulkFieldMeta?.kind === 'bool'" label="新值">
+          <el-switch v-model="bulkFieldBool" active-text="锁定（手动占用）" inactive-text="解锁" />
+        </el-form-item>
+        <el-form-item v-else-if="bulkFieldMeta" :label="bulkFieldMeta.secret ? '新密码' : '新值'" required>
+          <el-input
+            v-model="bulkFieldValue"
+            :type="bulkFieldMeta.secret ? 'password' : 'text'"
+            :show-password="bulkFieldMeta.secret"
+            :placeholder="bulkFieldMeta.kind === 'text' && bulkFieldKey === 'note' ? '可留空表示清空备注' : ''"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="bulkEditOpen = false">取消</el-button>
+        <el-button type="primary" :loading="bulkApplying" @click="applyBulkField">应用到所选</el-button>
       </template>
     </el-dialog>
 
@@ -1241,6 +1450,9 @@ onActivated(() => {
   margin: 8px 0 0;
   font-size: 12px;
   color: #9ca3af;
+}
+.filter-hint.warn {
+  color: var(--el-color-warning);
 }
 .gap-list {
   margin: 8px 0 0;

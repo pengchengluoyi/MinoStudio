@@ -73,70 +73,58 @@
       </div>
 
       <div class="channel-head">
-        <span>登录凭证</span>
+        <span>项目 Gmail 收件箱</span>
       </div>
       <div class="field-list">
         <div class="field-row">
           <div class="field-label">
-            <span class="field-name">一次性口令</span>
+            <span class="field-name">收件地址</span>
+            <span class="field-meta">全项目唯一；号池用 + 别名进此信箱</span>
           </div>
           <div class="field-control">
-            <el-select v-model="otpMode" style="width: 100%">
-              <el-option label="自动（账号固定码 → 环境固定码 → 知识 → 解码平台 → 问人）" value="auto" />
-              <el-option label="只用固定码" value="fixed" />
-              <el-option label="解码平台" value="adapter" />
-              <el-option label="每次问人" value="hitl" />
-            </el-select>
             <el-input
-              v-if="otpMode === 'fixed' || otpMode === 'auto'"
-              v-model="otpFixed"
-              placeholder="本环境默认固定码，可空；账号备注里的码优先"
-              style="margin-top: 8px"
+              v-model="gmailInboxAddress"
+              placeholder="qaproject@gmail.com"
+              spellcheck="false"
+              clearable
             />
-            <template v-if="otpMode === 'adapter' || otpMode === 'auto'">
-              <el-input
-                v-model="otpAdapterUrl"
-                placeholder="解码平台 URL，POST {slot, env, account}"
-                style="margin-top: 8px"
-              />
-              <el-input
-                v-model="otpAdapterHeader"
-                type="password"
-                show-password
-                placeholder="可选 Authorization"
-                style="margin-top: 8px"
-              />
-            </template>
-          </div>
-        </div>
-        <div class="field-row">
-          <div class="field-label">
-            <span class="field-name">登录号</span>
-          </div>
-          <div class="field-control">
-            <el-select v-model="phoneMode" style="width: 100%">
-              <el-option label="自动（账号管理 → 知识 → 解码平台 → 问人）" value="auto" />
-              <el-option label="只用账号管理" value="pool" />
-              <el-option label="解码平台" value="adapter" />
-              <el-option label="真实号 / 问人" value="hitl" />
-            </el-select>
-            <template v-if="phoneMode === 'adapter' || phoneMode === 'auto'">
-              <el-input
-                v-model="phoneAdapterUrl"
-                placeholder="取号平台 URL"
-                style="margin-top: 8px"
-              />
-              <el-input
-                v-model="phoneAdapterHeader"
-                type="password"
-                show-password
-                placeholder="可选 Authorization"
-                style="margin-top: 8px"
-              />
-            </template>
+            <p class="field-note">IMAP 应用专用密码在 Studio「插件 → Gmail 收信」配置（每用户）。</p>
           </div>
         </div>
       </div>
+
+      <div class="channel-head">
+        <span>环境默认登录凭证</span>
+        <span class="field-meta">未单独配置的应用继承此项（当前环境：{{ activeLabel || activeTab }}）</span>
+      </div>
+      <SecretsBlock :secrets="envDefaultSecrets" @change="onEnvSecretsChange" />
+
+      <div class="channel-head">
+        <span>各应用登录凭证</span>
+        <span class="field-meta">可与环境默认不同；支持同一 App 在 test / pre 自由搭配</span>
+      </div>
+      <el-collapse class="app-secrets-collapse">
+        <el-collapse-item v-for="ch in channels" :key="'sec-' + ch.id" :name="ch.id">
+          <template #title>
+            <span class="collapse-title">{{ channelTitle(ch) }}</span>
+            <code class="var-chip mini">{{ ch.id }}</code>
+            <span v-if="!isChannelInherit(ch.id)" class="custom-tag">自定义</span>
+          </template>
+          <div class="inherit-row">
+            <el-checkbox
+              :model-value="isChannelInherit(ch.id)"
+              @change="(v) => setChannelInherit(ch.id, v)"
+            >
+              继承环境默认
+            </el-checkbox>
+          </div>
+          <SecretsBlock
+            :secrets="channelSecretsView(ch.id)"
+            :disabled="isChannelInherit(ch.id)"
+            @change="(patch) => onChannelSecretsChange(ch.id, patch)"
+          />
+        </el-collapse-item>
+      </el-collapse>
 
     </section>
 
@@ -164,8 +152,16 @@
             <el-option v-for="p in APP_PLATFORMS" :key="p.id" :label="p.label" :value="p.id" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="sameKindExists ? '三方简称（必填）' : '三方简称'">
-          <el-input v-model="draftAlias" :placeholder="sameKindExists ? '例如：CRM、OR、管理后台' : '主应用可空；三方必填，例如 CRM'" />
+        <el-form-item label="简称" required>
+          <el-input v-model="draftAlias" placeholder="例如：Hi3D、管理后台、CRM" @input="syncDraftAppIdentifier" />
+        </el-form-item>
+        <el-form-item label="应用标识" required>
+          <el-input
+            v-model="draftAppIdentifier"
+            placeholder="由简称自动生成，可改：英文、数字与下划线"
+            spellcheck="false"
+          />
+          <p class="add-channel-hint">占位符形如 {{ sampleConfigVar }}</p>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -190,10 +186,15 @@ import {
   emptyProfile,
   normalizeEnvDoc,
   normalizeEnvSecrets,
+  normalizeGmailInbox,
+  normalizeChannelSecrets,
   resolveChannelValue,
   slugEnvKey,
+  appIdentifierFromAlias,
+  channelConfigVar,
 } from '@/constants/envProfiles'
 import { envUsage } from '@/utils/qaWorkflow'
+import SecretsBlock from '@/components/EnvSecretsBlock.vue'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -217,6 +218,26 @@ const addChannelOpen = ref(false)
 const draftKind = ref('web')
 const draftPlatform = ref('android')
 const draftAlias = ref('')
+const draftAppIdentifier = ref('')
+const gmailInboxAddress = ref('')
+/** channelId -> envKey -> secrets | null（null = 继承环境默认） */
+const channelSecrets = reactive({})
+
+const sampleConfigVar = computed(() => {
+  const preset = DEFAULT_CHANNELS.find((c) => c.id === (draftKind.value === 'app' ? draftPlatform.value : draftKind.value))
+  const plat = draftKind.value === 'app' ? draftPlatform.value : draftKind.value
+  const ident = String(draftAppIdentifier.value || appIdentifierFromAlias(draftAlias.value) || '标识').trim()
+  const field = preset?.field || 'value'
+  return `{{${plat}.${ident}.${field}}}`
+})
+
+const syncDraftAppIdentifier = () => {
+  const auto = appIdentifierFromAlias(draftAlias.value)
+  if (auto) draftAppIdentifier.value = auto
+}
+
+const wrapVar = (ch) => channelConfigVar(ch)
+const envOrder = computed(() => environments.value.map((e) => e.key))
 
 const activeIndex = computed(() => Math.max(0, environments.value.findIndex((e) => e.key === activeTab.value)))
 const activeLabel = computed({
@@ -234,9 +255,6 @@ const sameKindExists = computed(() => channels.value.some((c) => {
 }))
 const activeUsage = computed(() => envUsage(props.workflow, activeTab.value))
 const activeUsageText = computed(() => activeUsage.value.map((u) => `${u.trackLabel}「${u.stepLabel}」`).join('、'))
-
-const wrapVar = (ch) => `{{app.${ch.id}.${ch.field || 'value'}}}`
-const envOrder = computed(() => environments.value.map((e) => e.key))
 
 const ensureProfile = (key) => {
   if (!profiles[key]) profiles[key] = emptyProfile(channels.value)
@@ -274,39 +292,47 @@ const inheritHint = (ch) => {
 const activeEnv = computed(() => environments.value.find((e) => e.key === activeTab.value) || null)
 const ensureSecrets = (env) => {
   if (!env) return emptyEnvSecrets()
-  if (!env.secrets?.otp || !env.secrets?.phone) {
-    env.secrets = normalizeEnvSecrets(env.secrets)
-  }
+  env.secrets = normalizeEnvSecrets(env.secrets)
   return env.secrets
 }
-const otpMode = computed({
-  get: () => ensureSecrets(activeEnv.value).otp.mode,
-  set: (v) => { ensureSecrets(activeEnv.value).otp.mode = v; dirty.value = true },
-})
-const otpFixed = computed({
-  get: () => ensureSecrets(activeEnv.value).otp.fixed,
-  set: (v) => { ensureSecrets(activeEnv.value).otp.fixed = v; dirty.value = true },
-})
-const otpAdapterUrl = computed({
-  get: () => ensureSecrets(activeEnv.value).otp.adapter_url,
-  set: (v) => { ensureSecrets(activeEnv.value).otp.adapter_url = v; dirty.value = true },
-})
-const otpAdapterHeader = computed({
-  get: () => ensureSecrets(activeEnv.value).otp.adapter_header,
-  set: (v) => { ensureSecrets(activeEnv.value).otp.adapter_header = v; dirty.value = true },
-})
-const phoneMode = computed({
-  get: () => ensureSecrets(activeEnv.value).phone.mode,
-  set: (v) => { ensureSecrets(activeEnv.value).phone.mode = v; dirty.value = true },
-})
-const phoneAdapterUrl = computed({
-  get: () => ensureSecrets(activeEnv.value).phone.adapter_url,
-  set: (v) => { ensureSecrets(activeEnv.value).phone.adapter_url = v; dirty.value = true },
-})
-const phoneAdapterHeader = computed({
-  get: () => ensureSecrets(activeEnv.value).phone.adapter_header,
-  set: (v) => { ensureSecrets(activeEnv.value).phone.adapter_header = v; dirty.value = true },
-})
+const envDefaultSecrets = computed(() => normalizeEnvSecrets(ensureSecrets(activeEnv.value)))
+
+const onEnvSecretsChange = (next) => {
+  if (!activeEnv.value) return
+  activeEnv.value.secrets = next
+  dirty.value = true
+}
+
+const channelRow = (chId) => {
+  if (!channelSecrets[chId]) channelSecrets[chId] = {}
+  return channelSecrets[chId]
+}
+
+const isChannelInherit = (chId) => {
+  const ek = activeTab.value
+  return channelRow(chId)[ek] == null
+}
+
+const channelSecretsView = (chId) => {
+  const ek = activeTab.value
+  const row = channelRow(chId)[ek]
+  if (row == null) return envDefaultSecrets.value
+  return normalizeEnvSecrets(row)
+}
+
+const setChannelInherit = (chId, inherit) => {
+  const ek = activeTab.value
+  if (inherit) channelRow(chId)[ek] = null
+  else channelRow(chId)[ek] = emptyEnvSecrets()
+  dirty.value = true
+}
+
+const onChannelSecretsChange = (chId, next) => {
+  const ek = activeTab.value
+  if (isChannelInherit(chId)) return
+  channelRow(chId)[ek] = next
+  dirty.value = true
+}
 
 const profileFilled = (key) => {
   const snap = profiles[key]
@@ -339,6 +365,16 @@ const applyDoc = (raw) => {
     }
   }
   activeTab.value = environments.value[0]?.key || ''
+  gmailInboxAddress.value = normalizeGmailInbox(doc.gmail_inbox).address
+  Object.keys(channelSecrets).forEach((k) => delete channelSecrets[k])
+  const cs = doc.channel_secrets || {}
+  for (const ch of channels.value) {
+    channelSecrets[ch.id] = {}
+    for (const env of environments.value) {
+      const slot = cs[ch.id]?.[env.key]
+      channelSecrets[ch.id][env.key] = slot ? normalizeEnvSecrets(slot) : null
+    }
+  }
   dirty.value = false
   nextTick(() => {
     hydrating = false
@@ -360,6 +396,7 @@ const buildPayload = () => {
       kind: c.kind,
       platform: c.platform,
       alias: c.alias || '',
+      app_identifier: c.app_identifier || appIdentifierFromAlias(c.alias) || '',
       third_party: Boolean(c.third_party || c.alias),
       label: channelTitle(c),
       field: c.field,
@@ -373,6 +410,12 @@ const buildPayload = () => {
       }
       return [e.key, snap]
     })),
+    gmail_inbox: normalizeGmailInbox({ address: gmailInboxAddress.value }),
+    channel_secrets: normalizeChannelSecrets(
+      channelSecrets,
+      channels.value.map((c) => c.id),
+      keys,
+    ),
   }
 }
 
@@ -433,6 +476,9 @@ const confirmAddEnv = () => {
   if (environments.value.some((e) => e.key === key)) key = `${key}${environments.value.length + 1}`
   environments.value = [...environments.value, { key, label, secrets: emptyEnvSecrets() }]
   profiles[key] = emptyProfile(channels.value)
+  for (const ch of channels.value) {
+    channelRow(ch.id)[key] = channelRow(ch.id)[activeTab.value] ?? null
+  }
   activeTab.value = key
   draftEnvLabel.value = ''
   addEnvOpen.value = false
@@ -449,6 +495,9 @@ const removeEnv = async () => {
   const idx = environments.value.findIndex((e) => e.key === key)
   environments.value = environments.value.filter((e) => e.key !== key)
   delete profiles[key]
+  for (const cid of Object.keys(channelSecrets)) {
+    if (channelSecrets[cid]) delete channelSecrets[cid][key]
+  }
   const fallback = environments.value[Math.min(Math.max(idx, 0), environments.value.length - 1)]
   activeTab.value = fallback?.key || ''
   dirty.value = true
@@ -458,6 +507,7 @@ const openAddChannel = () => {
   draftKind.value = 'web'
   draftPlatform.value = 'android'
   draftAlias.value = ''
+  draftAppIdentifier.value = ''
   addChannelOpen.value = true
 }
 
@@ -465,21 +515,28 @@ const confirmAddChannel = () => {
   const kind = draftKind.value
   const platform = kind === 'app' ? draftPlatform.value : kind
   const alias = String(draftAlias.value || '').trim()
-  if (sameKindExists.value && !alias) {
-    ElMessage.warning('同类型已有一条，请填写三方平台简称，例如 CRM、管理后台')
+  if (!alias) {
+    ElMessage.warning('请填写简称')
     return
   }
+  let appIdent = String(draftAppIdentifier.value || '').trim() || appIdentifierFromAlias(alias)
+  appIdent = appIdentifierFromAlias(appIdent) || appIdent.replace(/[^a-z0-9_]/gi, '').toLowerCase()
+  if (!appIdent) {
+    ElMessage.warning('应用标识不能为空：简称里需包含英文字母或数字，或在下方手动填写')
+    return
+  }
+  draftAppIdentifier.value = appIdent
   const preset = DEFAULT_CHANNELS.find((c) => c.id === platform) || DEFAULT_CHANNELS.find((c) => c.kind === kind)
-  const aliasSlug = slugEnvKey(alias, '')
-  let id = aliasSlug ? `${platform}-${aliasSlug}` : platform
+  let id = appIdent === platform ? platform : `${platform}.${appIdent}`
   if (channels.value.some((c) => c.id === id)) id = `${id}${channels.value.length + 1}`
   const ch = {
     id,
     kind,
     platform,
     alias,
-    third_party: Boolean(alias),
-    label: alias || preset?.label || kind,
+    app_identifier: appIdent,
+    third_party: true,
+    label: alias,
     field: preset?.field || 'value',
     placeholder: preset?.placeholder || '',
   }
@@ -487,6 +544,7 @@ const confirmAddChannel = () => {
   for (const env of environments.value) {
     ensureProfile(env.key)
     profiles[env.key][ch.id] = { [ch.field]: '' }
+    channelRow(ch.id)[env.key] = null
   }
   addChannelOpen.value = false
   dirty.value = true
@@ -502,6 +560,7 @@ const removeChannel = async (id) => {
   for (const env of environments.value) {
     if (profiles[env.key]) delete profiles[env.key][id]
   }
+  delete channelSecrets[id]
   dirty.value = true
 }
 
@@ -518,6 +577,8 @@ const copyKey = async (ch) => {
 watch(() => props.projectId, loadProject, { immediate: true })
 watch(profiles, () => { if (!hydrating) dirty.value = true }, { deep: true })
 watch(environments, () => { if (!hydrating) dirty.value = true }, { deep: true })
+watch(gmailInboxAddress, () => { if (!hydrating) dirty.value = true })
+watch(channelSecrets, () => { if (!hydrating) dirty.value = true }, { deep: true })
 
 defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFilled })
 </script>
@@ -543,6 +604,26 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFille
   padding: 10px 8px;
   background: #f3f4f6;
   border-right: 1px solid #e5e7eb;
+}
+.app-secrets-collapse {
+  margin: 0 12px 16px;
+  border: none;
+}
+.collapse-title {
+  font-weight: 600;
+  margin-right: 8px;
+}
+.var-chip.mini {
+  font-size: 10px;
+  margin-right: 8px;
+}
+.custom-tag {
+  font-size: 11px;
+  color: #2563eb;
+  margin-left: 4px;
+}
+.inherit-row {
+  margin-bottom: 8px;
 }
 .nav-head {
   font-size: 11px;
@@ -709,6 +790,12 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFille
   white-space: nowrap;
 }
 .var-chip:hover { background: #eef2ff; color: #4f46e5; }
+.add-channel-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--mo-muted, #6b7280);
+  font-family: ui-monospace, monospace;
+}
 .field-row :deep(.el-input) { width: 100%; }
 .panel-hint {
   margin-top: 18px;

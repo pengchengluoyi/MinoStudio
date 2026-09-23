@@ -51,7 +51,11 @@ const fetchManifestJson = async (url) => {
   }
   if (typeof window !== 'undefined' && window.electronAPI?.scoutFetchJson) {
     const res = await window.electronAPI.scoutFetchJson(url)
-    if (!res?.ok) throw new Error(res?.error || '无法从 GitHub 拉取安装列表')
+    if (!res?.ok) {
+      const err = new Error(res?.error || '无法从 GitHub 拉取安装列表')
+      err.response = { status: res?.status || 0 }
+      throw err
+    }
     return res.data
   }
   try {
@@ -65,23 +69,98 @@ const fetchManifestJson = async (url) => {
   }
 }
 
+export const getScoutReleaseMeta = async ({ os, arch } = {}) => {
+  const wantOs = os || undefined
+  const wantArch = arch || (wantOs ? packedArchForOs(wantOs) : undefined)
+  try {
+    const res = await request({
+      url: '/releases/scout/meta',
+      method: 'get',
+      params: {
+        ...(wantOs ? { os: wantOs } : {}),
+        ...(wantArch ? { arch: wantArch } : {}),
+      },
+    })
+    return pickData(res)
+  } catch (e) {
+    return {
+      version: '',
+      packaging: false,
+      manifest_ready: false,
+      detail: e?.response?.data?.detail || e?.message || '',
+    }
+  }
+}
+
+/** @returns {{ data: object|null, packaging: boolean, version: string, error: string }} */
 export const getScoutLatestRelease = async ({ os } = {}) => {
   const want = { os: os || undefined }
   const manifestUrl = scoutManifestUrl()
   if (!manifestUrl) {
-    const err = new Error('未解析到 GitHub Scout manifest。本地请有 origin，或设置 VITE_SCOUT_MANIFEST_URL。')
-    err.response = { status: 404, data: { detail: err.message } }
-    throw err
+    return {
+      data: null,
+      packaging: false,
+      version: '',
+      error: '未解析到 GitHub Scout manifest。本地请有 origin，或设置 VITE_SCOUT_MANIFEST_URL。',
+    }
   }
   const bust = `${manifestUrl}${manifestUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
-  const manifest = await fetchManifestJson(bust)
-  const item = pickScoutRelease(manifest, want)
-  if (!item?.url) {
-    const err = new Error('GitHub manifest 里没有当前系统的安装包')
-    err.response = { status: 404, data: { detail: err.message } }
-    throw err
+  try {
+    const manifest = await fetchManifestJson(bust)
+    const item = pickScoutRelease(manifest, want)
+    if (item?.url) {
+      return {
+        data: JSON.parse(JSON.stringify(item)),
+        packaging: false,
+        version: String(item.version || manifest.version || '').replace(/^v/i, ''),
+        error: '',
+      }
+    }
+  } catch (e) {
+    const status = e?.response?.status
+    const msg = e?.response?.data?.detail || e?.message || ''
+    if (status !== 404 && !/HTTP 404/i.test(msg) && !/failed to fetch/i.test(msg)) {
+      const meta = await getScoutReleaseMeta(want)
+      if (meta.packaging && meta.version) {
+        return { data: null, packaging: true, version: meta.version, error: meta.detail || '' }
+      }
+      return { data: null, packaging: false, version: meta.version || '', error: msg || '拉取安装包失败' }
+    }
   }
-  return { data: JSON.parse(JSON.stringify(item)) }
+
+  const meta = await getScoutReleaseMeta(want)
+  if (meta.manifest_ready && meta.version) {
+    try {
+      const res = await request({
+        url: '/releases/scout/latest',
+        method: 'get',
+        params: { os: want.os || 'darwin', arch: packedArchForOs(want.os || 'darwin') },
+      })
+      const row = pickData(res)
+      if (row?.url) {
+        return {
+          data: JSON.parse(JSON.stringify(row)),
+          packaging: false,
+          version: String(row.version || meta.version || '').replace(/^v/i, ''),
+          error: '',
+        }
+      }
+    } catch { /* fall through */ }
+  }
+  if (meta.packaging && meta.version) {
+    return {
+      data: null,
+      packaging: true,
+      version: String(meta.version || '').replace(/^v/i, ''),
+      error: meta.detail || 'GitHub Release 已创建，安装包仍在 CI 上传中',
+    }
+  }
+  return {
+    data: null,
+    packaging: false,
+    version: meta.version || '',
+    error: meta.detail || 'GitHub manifest 里没有当前系统的安装包',
+  }
 }
 
 export const createScoutInstallToken = () =>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import { getAuthStatus } from '@/api/auth'
@@ -14,7 +14,7 @@ import {
   getNodeLogs,
 } from '@/api/runtime'
 import { disableAdbKeyboard } from '@/api/device'
-import { canInstallLocalScout, nexusOrigin, scoutManifestUrl } from '@/utils/config'
+import { canInstallLocalScout, isElectronRuntime, nexusOrigin, scoutManifestUrl } from '@/utils/config'
 import {
   packedArchForOs,
   scoutReleasesPageUrl,
@@ -26,6 +26,7 @@ import { openExternalUrl } from '@/utils/openExternal'
 import {
   nodeActionState,
   ownershipLabel,
+  webPlaywrightParallelText,
 } from '@/utils/scoutNodes'
 import { formatRelativeTime } from '@/utils/relativeTime'
 import { ipcPayload } from '@/utils/ipcPayload'
@@ -52,7 +53,7 @@ const starting = ref(false)
 const stopping = ref(false)
 const restarting = ref(false)
 const updating = ref(false)
-const remoteUpdateJob = ref(null)
+const remoteUpdateJobs = ref({})
 const copyingRemote = ref(false)
 const uninstalling = ref(false)
 const installProgress = ref(null)
@@ -82,6 +83,7 @@ const startJob = ref({
 })
 const release = ref(null)
 const releaseMissing = ref(false)
+const releasePackaging = ref(false)
 const releaseError = ref('')
 const checkingVersion = ref(true)
 const platform = ref(detectClientPlatform())
@@ -97,7 +99,8 @@ const props = defineProps({
 })
 
 const canInstall = computed(() => canInstallLocalScout())
-const isElectron = computed(() => canInstall.value)
+const isElectron = computed(() => isElectronRuntime())
+const showLocalScout = computed(() => isElectron.value)
 const origin = computed(() => nexusOrigin())
 const manifestUrl = computed(() => scoutManifestUrl())
 const studioId = computed(() => localScout.value.studioId || '')
@@ -119,6 +122,7 @@ const setupInProgress = computed(() => Boolean(setupJob.value.active))
 const versionCheck = computed(() => {
   if (setupInProgress.value) return ''
   if (checkingVersion.value) return 'checking'
+  if (releasePackaging.value && latestVersion.value) return 'unknown'
   if (!latestVersion.value || releaseMissing.value) return 'unknown'
   if (!localInstalled.value && !installedVersion.value) return ''
   if (!installedVersion.value) return 'unknown'
@@ -127,10 +131,16 @@ const versionCheck = computed(() => {
 const updateAvailable = computed(() => versionCheck.value === 'outdated')
 const versionBannerTitle = computed(() => {
   if (checkingVersion.value) return '正在检测 Scout 版本…'
+  if (releasePackaging.value && latestVersion.value) {
+    return `GitHub 正在打包 v${latestVersion.value}`
+  }
   if (!latestVersion.value) return '无法获取 GitHub 稳定版'
   return `GitHub 最新稳定版 v${latestVersion.value}`
 })
 const versionBannerHint = computed(() => {
+  if (releasePackaging.value) {
+    return releaseError.value || 'Release 已创建，CI 正在上传安装包与 manifest.json，稍后再试更新或安装。'
+  }
   if (releaseMissing.value) return releaseError.value || '请检查网络或 manifest 配置'
   return '比对来源：GitHub Release Latest（不含 Pre-release）。推 main 触发的 dev 包不会当作最新。'
 })
@@ -199,18 +209,28 @@ const setupPhase = computed(() => {
   return '安装中'
 })
 const setupProgressText = computed(() => {
-  const remote = remoteUpdateJob.value
-  if (remote && (remote.active || updating.value)) {
-    const label = remote.label || remote.stage || '远程更新'
-    const pct = Number(remote.percent)
-    if (Number.isFinite(pct) && pct >= 0) return `远程更新 · ${label} ${Math.round(pct)}%`
-    return `远程更新 · ${label}`
-  }
   const phase = setupPhase.value
   const label = setupJob.value.label || phase
   if (downloadPercent.value != null) return `${phase} · ${label} ${downloadPercent.value}%`
   return `${phase} · ${label}`
 })
+
+const rowUpdateJob = (row) => {
+  const id = remoteCommandId(row)
+  if (!id) return null
+  return remoteUpdateJobs.value[id] || null
+}
+
+const rowUpdateActive = (row) => Boolean(rowUpdateJob(row)?.active)
+
+const rowUpdateProgressText = (row) => {
+  const job = rowUpdateJob(row)
+  if (!job?.active) return '更新'
+  const label = job.label || job.stage || '更新中'
+  const pct = Number(job.percent)
+  if (Number.isFinite(pct) && pct >= 0) return `${label} ${Math.round(pct)}%`
+  return label
+}
 
 const openReleases = (e) => {
   e?.preventDefault?.()
@@ -337,17 +357,25 @@ const refreshNodes = async () => {
 
 const refreshRelease = async () => {
   releaseMissing.value = false
+  releasePackaging.value = false
   releaseError.value = ''
   try {
     const res = await getScoutLatestRelease({ os: platform.value.os })
-    release.value = ipcPayload(res?.data || null)
+    releasePackaging.value = Boolean(res.packaging)
+    release.value = res.data ? ipcPayload(res.data) : (res.version ? { version: res.version, url: '' } : null)
+    if (res.packaging) {
+      releaseMissing.value = false
+      if (res.error) releaseError.value = res.error
+      return
+    }
     if (!release.value?.url) {
       releaseMissing.value = true
-      releaseError.value = 'GitHub 上没有当前系统的安装包'
+      releaseError.value = res.error || 'GitHub 上没有当前系统的安装包'
     }
   } catch (e) {
     release.value = null
     releaseMissing.value = true
+    releasePackaging.value = false
     releaseError.value = e?.response?.data?.detail || e?.message || '拉取安装包失败'
   }
 }
@@ -438,7 +466,35 @@ const localDevices = computed(() => {
   return list
 })
 
-const showInstallUi = computed(() => setupInProgress.value || !localInstalled.value)
+const showInstallUi = computed(() => (
+  showLocalScout.value && (setupInProgress.value || !localInstalled.value)
+))
+
+const nodeRowKey = (row) => String(row?.node_id || row?.scout_id || '')
+
+const expandedNodeKeys = ref([])
+
+watch(
+  remoteRows,
+  (rows) => {
+    expandedNodeKeys.value = rows.filter((r) => rowOnline(r)).map((r) => nodeRowKey(r)).filter(Boolean)
+  },
+  { immediate: true },
+)
+
+const onNodeExpandChange = (_row, expanded) => {
+  expandedNodeKeys.value = expanded.map((r) => nodeRowKey(r)).filter(Boolean)
+}
+
+const onlineDevicesOf = (row) => {
+  const list = Array.isArray(row?.devices) ? row.devices : []
+  return list.filter((d) => deviceOnline(d))
+}
+
+const offlineDevicesOf = (row) => {
+  const list = Array.isArray(row?.devices) ? row.devices : []
+  return list.filter((d) => !deviceOnline(d))
+}
 
 const rowActions = (row) => {
   const needsUpdate = rowNeedsUpdate(row)
@@ -608,9 +664,11 @@ const runRemote = async (row, command) => {
   busyId.value = `${row.node_id}:${command}`
   const nodeKey = remoteCommandId(row)
   let pollTimer = null
-  if (command === 'update') {
-    updating.value = true
-    remoteUpdateJob.value = { active: true, label: '已下发更新', percent: 0, stage: 'plan' }
+  if (command === 'update' && nodeKey) {
+    remoteUpdateJobs.value = {
+      ...remoteUpdateJobs.value,
+      [nodeKey]: { active: true, label: '已下发更新', percent: 0, stage: 'plan' },
+    }
     pollTimer = setInterval(async () => {
       try {
         await refreshNodes()
@@ -619,7 +677,10 @@ const runRemote = async (row, command) => {
         )
         const job = hit?.update_job
         if (job && typeof job === 'object' && Object.keys(job).length) {
-          remoteUpdateJob.value = job
+          remoteUpdateJobs.value = {
+            ...remoteUpdateJobs.value,
+            [nodeKey]: { ...job, active: true },
+          }
         }
       } catch { /* ignore poll errors */ }
     }, 1500)
@@ -642,9 +703,10 @@ const runRemote = async (row, command) => {
     ElMessage.error(e?.response?.data?.detail || e?.message || '下发失败')
   } finally {
     if (pollTimer) clearInterval(pollTimer)
-    if (command === 'update') {
-      updating.value = false
-      remoteUpdateJob.value = null
+    if (command === 'update' && nodeKey) {
+      const next = { ...remoteUpdateJobs.value }
+      delete next[nodeKey]
+      remoteUpdateJobs.value = next
     }
     busyId.value = ''
   }
@@ -770,8 +832,14 @@ const updateLocal = async () => {
   updating.value = true
   try {
     const rel = release.value || (await getScoutLatestRelease({ os: platform.value.os }))?.data
-    release.value = rel
-    if (!rel?.url) throw new Error('没有可用的 GitHub 安装包')
+    if (rel) release.value = rel
+    if (!rel?.url) {
+      const again = await getScoutLatestRelease({ os: platform.value.os })
+      if (again.packaging) {
+        throw new Error(again.error || `GitHub 正在打包 v${again.version || ''}`)
+      }
+      throw new Error(again.error || '没有可用的 GitHub 安装包')
+    }
     let token = ''
     try {
       const tok = await createScoutInstallToken()
@@ -881,7 +949,7 @@ onUnmounted(() => {
         <h2 class="settings-page-title">Scout 节点</h2>
       </div>
       <div class="settings-summary-pill" :class="{ 'is-muted': showInstallUi && !remoteRows.length }">
-        {{ showInstallUi ? remoteRows.length : remoteRows.length + 1 }} 个节点
+        {{ remoteRows.length + (showLocalScout && !showInstallUi ? 1 : 0) }} 个节点
       </div>
     </header>
 
@@ -890,7 +958,7 @@ onUnmounted(() => {
         <div class="settings-kicker">Scout 版本</div>
         <p class="version-banner-title">{{ versionBannerTitle }}</p>
         <p class="version-banner-hint">{{ versionBannerHint }}</p>
-        <p v-if="installedVersion" class="version-banner-local">
+        <p v-if="installedVersion && showLocalScout" class="version-banner-local">
           本机/当前节点报告版本：<strong>v{{ installedVersion }}</strong>
           <span v-if="versionCheck === 'latest'" class="version-ok"> · 已对齐稳定版</span>
           <span v-else-if="versionCheck === 'outdated'" class="version-warn"> · 可更新</span>
@@ -904,7 +972,7 @@ onUnmounted(() => {
           @click="openReleases"
         >GitHub Releases</button>
         <button
-          v-if="updateAvailable && (isElectron || canRemoteUpdate(localRow))"
+          v-if="updateAvailable && !releasePackaging && (isElectron || canRemoteUpdate(localRow))"
           type="button"
           class="settings-action-pill"
           :disabled="updating || setupInProgress || (!isElectron && !canRemoteUpdate(localRow))"
@@ -926,7 +994,10 @@ onUnmounted(() => {
         {{ platform.os }}-{{ platform.arch }}
         <template v-if="latestVersion"> · 最新 v{{ latestVersion }}</template>
       </p>
-      <p v-if="!release?.url" class="settings-page-desc install-warn">
+      <p v-if="releasePackaging && latestVersion" class="settings-page-desc install-warn">
+        GitHub 正在打包 v{{ latestVersion }}，安装包上传完成后可下载。
+      </p>
+      <p v-else-if="!release?.url" class="settings-page-desc install-warn">
         {{ releaseError || '暂无可用安装包。' }}
         <a v-if="releasesPage" href="#" @click="openReleases">打开发布页</a>
       </p>
@@ -963,8 +1034,8 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <!-- 已安装：本机状态 + 设备列表 -->
-    <section v-else class="settings-table-card local-block">
+    <!-- 已安装：本机状态 + 设备列表（仅桌面 Studio） -->
+    <section v-else-if="showLocalScout" class="settings-table-card local-block">
       <div class="local-row">
         <div class="local-main">
           <div class="settings-kicker">本机</div>
@@ -1064,15 +1135,15 @@ onUnmounted(() => {
       </div>
       <p v-if="startJob.error && !starting" class="settings-page-desc install-warn">{{ startJob.error }}</p>
       <el-progress
-        v-if="setupInProgress || (updating && downloadPercent != null)"
+        v-if="setupInProgress || (updating && downloadPercent != null && showLocalScout)"
         class="install-progress"
         :percentage="downloadPercent ?? 0"
         :stroke-width="10"
       />
-      <p v-if="setupInProgress || updating" class="install-meta">{{ setupProgressText }}</p>
+      <p v-if="(setupInProgress || updating) && showLocalScout" class="install-meta">{{ setupProgressText }}</p>
 
       <el-table
-        :data="localDevices"
+        :data="onlineDevicesOf(localRow)"
         size="small"
         border
         class="local-devices"
@@ -1094,26 +1165,61 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="72">
+        <el-table-column label="操作" min-width="100" width="100">
           <template #default="{ row: d }">
             <button
               v-if="isAndroidDevice(d) && deviceOnline(d)"
               type="button"
-              class="settings-action-pill"
+              class="settings-action-pill op-pill"
               :disabled="deviceRestoreBusy === d.sn"
               @click="restoreAndroidDevice(d)"
             >{{ deviceRestoreBusy === d.sn ? '…' : '恢复' }}</button>
           </template>
         </el-table-column>
       </el-table>
+      <el-collapse v-if="offlineDevicesOf(localRow).length" class="offline-devices-collapse">
+        <el-collapse-item :title="`离线设备（${offlineDevicesOf(localRow).length}）`" name="local-off">
+          <el-table :data="offlineDevicesOf(localRow)" size="small" border class="local-devices">
+            <el-table-column label="设备" min-width="140">
+              <template #default="{ row: d }">{{ d.sn || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="类型" width="90">
+              <template #default="{ row: d }">{{ d.type || d.platform || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="型号" min-width="120">
+              <template #default="{ row: d }">{{ d.model || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="80">
+              <template #default="{ row: d }">
+                <el-tag size="small" type="info">离线</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
     </section>
 
     <section class="settings-table-card">
-      <div class="settings-kicker">其他 Scout</div>
-      <el-table :data="remoteRows" size="small" border stripe empty-text="暂无其他节点" row-key="node_id">
+      <div class="settings-kicker">Scout 列表</div>
+      <el-table
+        :data="remoteRows"
+        size="small"
+        border
+        stripe
+        empty-text="暂无其他节点"
+        :row-key="nodeRowKey"
+        :expand-row-keys="expandedNodeKeys"
+        @expand-change="onNodeExpandChange"
+      >
         <el-table-column type="expand">
           <template #default="{ row }">
-            <el-table :data="row.devices || []" size="small" border empty-text="暂无设备" class="nested-table">
+            <el-table
+              :data="onlineDevicesOf(row)"
+              size="small"
+              border
+              empty-text="暂无在线设备"
+              class="nested-table"
+            >
               <el-table-column label="设备" min-width="140">
                 <template #default="{ row: d }">{{ d.sn || '—' }}</template>
               </el-table-column>
@@ -1133,18 +1239,41 @@ onUnmounted(() => {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="72">
+              <el-table-column label="操作" min-width="100" width="100">
                 <template #default="{ row: d }">
                   <button
                     v-if="isAndroidDevice(d) && deviceOnline(d)"
                     type="button"
-                    class="settings-action-pill"
+                    class="settings-action-pill op-pill"
                     :disabled="deviceRestoreBusy === d.sn"
                     @click="restoreAndroidDevice(d)"
                   >{{ deviceRestoreBusy === d.sn ? '…' : '恢复' }}</button>
                 </template>
               </el-table-column>
             </el-table>
+            <el-collapse v-if="offlineDevicesOf(row).length" class="offline-devices-collapse">
+              <el-collapse-item :title="`离线设备（${offlineDevicesOf(row).length}）`" name="off">
+                <el-table :data="offlineDevicesOf(row)" size="small" border class="nested-table">
+                  <el-table-column label="设备" min-width="140">
+                    <template #default="{ row: d }">{{ d.sn || '—' }}</template>
+                  </el-table-column>
+                  <el-table-column label="类型" width="90">
+                    <template #default="{ row: d }">{{ d.type || d.platform || '—' }}</template>
+                  </el-table-column>
+                  <el-table-column label="型号" min-width="120">
+                    <template #default="{ row: d }">{{ d.model || '—' }}</template>
+                  </el-table-column>
+                  <el-table-column label="账户" min-width="120">
+                    <template #default="{ row: d }">{{ deviceAccount(row, d) }}</template>
+                  </el-table-column>
+                  <el-table-column label="状态" width="80">
+                    <template #default="{ row: d }">
+                      <el-tag size="small" type="info">离线</el-tag>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </el-collapse-item>
+            </el-collapse>
           </template>
         </el-table-column>
         <el-table-column label="Scout" min-width="150" show-overflow-tooltip>
@@ -1168,6 +1297,13 @@ onUnmounted(() => {
             <span v-else>—</span>
           </template>
         </el-table-column>
+        <el-table-column label="Web 并行" width="96">
+          <template #default="{ row }">
+            <span :class="{ 'text-warn': row.web_playwright_parallel?.full }">
+              {{ webPlaywrightParallelText(row) }}
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column label="设备" width="64">
           <template #default="{ row }">{{ row.device_count ?? (row.devices || []).length }}</template>
         </el-table-column>
@@ -1177,40 +1313,40 @@ onUnmounted(() => {
         <el-table-column label="心跳" width="100">
           <template #default="{ row }">{{ heartbeatText(row) || '—' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="320" fixed="right">
+        <el-table-column label="操作" min-width="380" width="380" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions">
+            <div class="row-actions scout-row-actions">
               <button
                 v-if="rowOnline(row)"
                 type="button"
-                class="settings-action-pill"
+                class="settings-action-pill op-pill"
                 @click="showNodeWorkload(row)"
               >任务</button>
               <button
                 v-if="rowOnline(row)"
                 type="button"
-                class="settings-action-pill"
+                class="settings-action-pill op-pill"
                 :disabled="logsBusy"
                 @click="viewRemoteLogs(row)"
               >日志</button>
               <button
                 v-if="rowActions(row).update.visible"
                 type="button"
-                class="settings-action-pill"
-                :disabled="!rowActions(row).update.enabled || remoteBusy"
+                class="settings-action-pill op-pill"
+                :disabled="!rowActions(row).update.enabled || remoteBusy || rowUpdateActive(row) || releasePackaging"
                 @click="act(row, 'update')"
-              >更新</button>
+              >{{ rowUpdateProgressText(row) }}</button>
               <button
                 v-if="rowActions(row).stop.visible"
                 type="button"
-                class="settings-action-pill"
+                class="settings-action-pill op-pill"
                 :disabled="!rowActions(row).stop.enabled || stopping || restarting || remoteBusy"
                 @click="act(row, 'stop')"
               >停止</button>
               <button
                 v-if="rowActions(row).restart.visible"
                 type="button"
-                class="settings-action-pill"
+                class="settings-action-pill op-pill"
                 :disabled="!rowActions(row).restart.enabled || starting || stopping || restarting || remoteBusy"
                 @click="act(row, 'restart')"
               >重启</button>
@@ -1240,6 +1376,12 @@ onUnmounted(() => {
             {{ (w.nexus_run_ids || []).join(', ') || '—' }}
           </template>
         </el-table-column>
+        <el-table-column label="Web 并行" width="88">
+          <template #default="{ row: w }">
+            <span v-if="w.web_parallel_max">{{ w.web_parallel_active ?? 0 }}/{{ w.web_parallel_max }} 路</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
       </el-table>
     </el-dialog>
   </div>
@@ -1248,6 +1390,10 @@ onUnmounted(() => {
 <style scoped>
 .scout-nodes-page.is-embedded {
   min-height: 0;
+}
+.text-warn {
+  color: #b45309;
+  font-weight: 600;
 }
 .install-hero {
   margin-bottom: 14px;
@@ -1332,6 +1478,16 @@ onUnmounted(() => {
 }
 .version-ok { color: #059669; font-weight: 600; }
 .version-warn { color: #b45309; font-weight: 600; }
+.offline-devices-collapse {
+  margin-top: 8px;
+}
+.scout-row-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.op-pill {
+  white-space: nowrap;
+}
 .row-actions {
   display: flex;
   flex-wrap: wrap;

@@ -70,8 +70,16 @@ const refreshRelease = async () => {
   releaseError.value = ''
   try {
     const res = await getScoutLatestRelease({ os: platform.value.os })
-    release.value = ipcPayload(res?.data || res || null)
-    if (!release.value?.url) releaseMissing.value = true
+    release.value = res.data ? ipcPayload(res.data) : (res.version ? { version: res.version, url: '' } : null)
+    if (res.packaging) {
+      releaseMissing.value = false
+      if (res.error) releaseError.value = res.error
+      return
+    }
+    if (!release.value?.url) {
+      releaseMissing.value = true
+      releaseError.value = res.error || 'GitHub 上没有当前系统的安装包'
+    }
   } catch (e) {
     release.value = null
     releaseMissing.value = true

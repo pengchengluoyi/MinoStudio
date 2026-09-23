@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   runCaseRunner,
   listCaseRunnerDevices,
@@ -24,7 +24,15 @@ import DispatchPage from '@/views/Settings/DispatchPage.vue'
 import DispatchJobPage from '@/views/Settings/DispatchJobPage.vue'
 import QaProcessPanel from '@/views/Testing/QaProcessPanel.vue'
 import SessionLogPanel from '@/views/Testing/SessionLogPanel.vue'
-import { filterExecutableDevices, formatDeviceMeta, formatDeviceTag } from '@/utils/testingDevices'
+import {
+  deviceRunBlockedByBusy,
+  deviceWebParallelFull,
+  formatWebParallelUsage,
+  filterExecutableDevices,
+  formatDeviceMeta,
+  formatDeviceTag,
+  isWebSlotDevice,
+} from '@/utils/testingDevices'
 import {
   casePlatformKind,
   coverageLabel,
@@ -49,8 +57,16 @@ import {
   taskTitle,
 } from '@/utils/testingTasks'
 import { fetchTaskDetail, fetchTasksForApp, useLiveTaskRefresh, useTestingTaskList } from '@/composables/useTestingTasks'
-import { envLabel } from '@/constants/envProfiles'
-import { groupCasesByModuleTree, parseCaseIdQuery, suiteCaseIds } from '@/utils/caseLibrary'
+import {
+  envLabel,
+  channelsConfiguredInEnv,
+  channelTitle,
+  channelKindText,
+  channelRunDeviceKind,
+  channelSurfaceKey,
+  normalizeEnvDoc,
+} from '@/constants/envProfiles'
+import { groupCasesByModuleTree, parseCaseIdQuery } from '@/utils/caseLibrary'
 import { casesFromProjectRows, generatedCasesFromProcess, mergeRunCases } from '@/utils/qaProcess'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import '@/views/Settings/settings-ui.css'
@@ -220,12 +236,21 @@ const cases = ref([])
 const casesLoading = ref(false)
 const newRunVisible = ref(false)
 const submitting = ref(false)
-const runForm = ref({ sns: [], coverage: 'once', platform: 'android', env_profile: 'test', use_persisted_baseline: true, use_cache: true, async_exec: true })
+const runForm = ref({
+  sns: [],
+  coverage: 'once',
+  platform: 'android',
+  env_profile: 'test',
+  env_surface: '',
+  use_persisted_baseline: true,
+  use_cache: true,
+  async_exec: true,
+})
 const runEnvironments = ref([])
+const runEnvDoc = ref(null)
 const runEnvDefault = ref('test')
 const selectedCaseIds = ref([])
 const suites = ref([])
-const selectedSuiteId = ref('')
 
 const selectedTask = computed(() => tasks.value.find((t) => t.taskId === selectedTaskId.value) || null)
 const hasCase = computed(() => route.name === 'TestingTaskCase' && !!selectedCaseId.value)
@@ -421,7 +446,6 @@ const syncTreeChecks = () => {
 const onModuleTreeCheck = () => {
   const nodes = moduleTreeRef.value?.getCheckedNodes(true) || []
   selectedCaseIds.value = nodes.map((n) => n.case_id || (n.isCase ? n.id : '')).filter(Boolean)
-  selectedSuiteId.value = ''
 }
 
 const selectedDeviceKinds = computed(() => {
@@ -432,7 +456,8 @@ const selectedDeviceKinds = computed(() => {
 const mixedSelectedPlatforms = computed(() => selectedDeviceKinds.value.length > 1)
 
 const deviceOptionDisabled = (d) => {
-  if (d.busy_task_id) return true
+  if (!deviceMatchesRunTarget(d)) return true
+  if (deviceRunBlockedByBusy(d)) return true
   if (!d.reserved_slot_id) return false
   return d.reserved_slot_id !== runSeed.value?.slotId
 }
@@ -462,7 +487,9 @@ const platformConflictCases = computed(() => {
   })
 })
 
-const busySelectedDevice = computed(() => selectedDevices.value.find((d) => d.busy_task_id) || null)
+const busySelectedDevice = computed(() => (
+  selectedDevices.value.find((d) => deviceRunBlockedByBusy(d)) || null
+))
 
 const canStartRun = computed(() => (
   selectedCaseIds.value.length > 0
@@ -756,15 +783,18 @@ const openCreateProject = () => {
   createProjectOpen.value = true
 }
 
+const goProjectEnvConfig = (project) => {
+  const pid = String(project?.id || '').trim()
+  if (!pid) return
+  router.push({
+    name: 'SettingsProjectEnv',
+    params: { projectId: pid },
+    query: { name: project?.name || '' },
+  })
+}
+
 const openCreateApp = (project) => {
-  if (!project?.id) {
-    openCreateProject()
-    return
-  }
-  createProjectKind.value = 'app'
-  createProjectTarget.value = project
-  resetCreateProjectForm()
-  createProjectOpen.value = true
+  goProjectEnvConfig(project)
 }
 
 const submitCreateProject = async () => {
@@ -784,7 +814,8 @@ const submitCreateProject = async () => {
       createProjectOpen.value = false
       await loadProjects()
       const project = projects.value.find((p) => p.id === row.id) || { ...row, apps: [] }
-      openCreateApp(project)
+      ElMessage.info('请在「配置 → 环境配置」中添加应用与包名')
+      goProjectEnvConfig(project)
       return
     }
     const project = createProjectTarget.value
@@ -816,7 +847,7 @@ const onWorkspaceCommand = (command) => {
   if (!project) return
   const first = (project.apps || [])[0]
   if (!first) {
-    openCreateApp(project)
+    goProjectEnvConfig(project)
     return
   }
   openApp(first, project)
@@ -907,62 +938,16 @@ const loadSuites = async () => {
   }
 }
 
-const applySuiteId = (id) => {
-  selectedSuiteId.value = id || ''
-  if (!id) return
-  if (id === '__all__') {
-    selectedCaseIds.value = (cases.value || []).map((c) => c.case_id).filter(Boolean)
-    return
-  }
-  const s = suites.value.find((x) => x.id === id)
-  if (!s) return
-  selectedCaseIds.value = suiteCaseIds(s, cases.value)
-}
-
-const saveSuiteFromRun = async () => {
-  if (!selectedCaseIds.value.length) {
-    ElMessage.warning('请先勾选用例')
-    return
-  }
-  try {
-    const { value } = await ElMessageBox.prompt('套件名称', '存为套件', {
-      confirmButtonText: '保存',
-      inputValue: '',
-      inputPattern: /\S/,
-      inputErrorMessage: '请填写名称',
-    })
-    const name = String(value || '').trim()
-    const next = [...suites.value]
-    const hit = next.findIndex((s) => s.name === name)
-    const row = {
-      id: hit >= 0 ? next[hit].id : '',
-      name,
-      case_ids: [...selectedCaseIds.value],
-      updated_at: new Date().toISOString(),
-    }
-    if (hit >= 0) next[hit] = { ...next[hit], ...row }
-    else next.push(row)
-    await updateAppAutomationConfig(appId.value, { suites: next })
-    await loadSuites()
-    const match = suites.value.find((s) => s.name === name)
-    if (match) selectedSuiteId.value = match.id
-    ElMessage.success('套件已保存')
-  } catch (_) { /* cancel */ }
-}
-
 const consumeOpenRun = async () => {
   if (String(route.query.openRun || '') !== '1') return
   const ids = parseCaseIdQuery(route.query.caseIds)
-  const suiteId = String(route.query.suite || '')
   tab.value = 'tasks'
   await Promise.all([
     loadCases(),
     loadDevices(),
-    loadSuites(),
     loadRunEnvironments(),
   ])
   const sns = String(route.query.sns || '').split(',').filter(Boolean)
-  selectedSuiteId.value = ''
   selectedCaseIds.value = []
   runSeed.value = ids.length || sns.length || route.query.kind
     ? {
@@ -976,8 +961,7 @@ const consumeOpenRun = async () => {
       }
     : null
   newRunVisible.value = true
-  if (suiteId && suites.value.some((s) => s.id === suiteId)) applySuiteId(suiteId)
-  else if (ids.length) selectedCaseIds.value = ids
+  if (ids.length) selectedCaseIds.value = ids
   if (sns.length) {
     const allowed = sns.filter((sn) => devices.value.some((d) => d.sn === sn))
     if (allowed.length) runForm.value.sns = allowed
@@ -1007,6 +991,51 @@ const ensureRunEnvSelection = () => {
     cur = keys.includes(runEnvDefault.value) ? runEnvDefault.value : (keys[0] || runEnvDefault.value || 'test')
   }
   runForm.value.env_profile = cur || 'test'
+  ensureRunSurfaceSelection()
+}
+
+const runConfiguredTargets = computed(() => {
+  if (!runEnvDoc.value) return []
+  const key = String(runForm.value.env_profile || runEnvDefault.value || 'test').trim()
+  return channelsConfiguredInEnv(runEnvDoc.value, key)
+})
+
+const selectedRunTarget = computed(() => {
+  const id = String(runForm.value.env_surface || '').trim()
+  return runConfiguredTargets.value.find((r) => r.id === id) || null
+})
+
+const runTargetDeviceKind = computed(() => channelRunDeviceKind(selectedRunTarget.value))
+
+const runFilteredDevices = computed(() => {
+  const want = runTargetDeviceKind.value
+  if (!want) return devices.value
+  return devices.value.filter((d) => devicePlatformKind(d) === want)
+})
+
+const deviceMatchesRunTarget = (device) => {
+  const want = runTargetDeviceKind.value
+  if (!want) return true
+  return devicePlatformKind(device) === want
+}
+
+const selectRunTarget = (row) => {
+  if (!row?.id) return
+  runForm.value.env_surface = row.id
+}
+
+const ensureRunSurfaceSelection = () => {
+  const rows = runConfiguredTargets.value
+  const cur = String(runForm.value.env_surface || '').trim()
+  if (cur && rows.some((r) => r.id === cur)) return
+  runForm.value.env_surface = rows.length === 1 ? rows[0].id : (rows[0]?.id || '')
+}
+
+const pruneRunDeviceSelection = () => {
+  runForm.value.sns = (runForm.value.sns || []).filter((sn) => {
+    const d = devices.value.find((x) => x.sn === sn)
+    return d && deviceMatchesRunTarget(d)
+  })
 }
 
 const loadRunEnvironments = async () => {
@@ -1019,19 +1048,23 @@ const loadRunEnvironments = async () => {
   }
   if (!pid) {
     runEnvironments.value = []
+    runEnvDoc.value = null
     return
   }
   try {
     const res = await getProjectEnv(pid)
     const data = res?.data || {}
     const doc = data.env && typeof data.env === 'object' ? data.env : data
+    runEnvDoc.value = normalizeEnvDoc(doc)
     runEnvironments.value = Array.isArray(doc.environments) ? doc.environments : []
     runEnvDefault.value = String(doc.default_profile || runEnvironments.value[0]?.key || 'test')
   } catch (_) {
+    runEnvDoc.value = null
     runEnvironments.value = []
     runEnvDefault.value = 'test'
   }
   ensureRunEnvSelection()
+  ensureRunSurfaceSelection()
 }
 
 const mergeSeedCases = (seed) => {
@@ -1043,14 +1076,12 @@ const mergeSeedCases = (seed) => {
 const openNewRun = async (seed = null) => {
   const real = seed && Array.isArray(seed.caseIds) ? seed : null
   runSeed.value = real && real.caseIds.length ? real : null
-  selectedSuiteId.value = ''
   selectedCaseIds.value = runSeed.value ? [...runSeed.value.caseIds] : []
   mergeSeedCases(runSeed.value)
   newRunVisible.value = true
   await Promise.all([
     loadCases(),
     loadDevices(),
-    loadSuites(),
     loadRunEnvironments(),
   ])
   mergeSeedCases(runSeed.value)
@@ -1065,20 +1096,25 @@ const openNewRun = async (seed = null) => {
 const selectAllVisibleCases = () => {
   const ids = (filteredCases.value || []).map((c) => c.case_id).filter(Boolean)
   selectedCaseIds.value = [...new Set(ids)]
-  selectedSuiteId.value = ''
 }
 
 const clearSelectedCases = () => {
   selectedCaseIds.value = []
-  selectedSuiteId.value = ''
 }
 
 const submitRun = async () => {
   if (!selectedCaseIds.value.length) { ElMessage.warning('请至少选择一条用例'); return }
+  if (runConfiguredTargets.value.length && !String(runForm.value.env_surface || '').trim()) {
+    ElMessage.warning('请选择被测应用（环境配置里已填写的目标）')
+    return
+  }
   const sns = runForm.value.sns || []
-  const busyDev = selectedDevices.value.find((d) => d.busy_task_id)
+  const busyDev = selectedDevices.value.find((d) => deviceRunBlockedByBusy(d))
   if (busyDev) {
-    ElMessage.warning(`设备占用中（任务 ${shortTaskId(busyDev.busy_task_id)}）`)
+    const msg = deviceWebParallelFull(busyDev)
+      ? `${formatDeviceTag(busyDev)} 浏览器并行已满（${formatWebParallelUsage(busyDev)}）`
+      : `设备占用中（任务 ${shortTaskId(busyDev.busy_task_id)}）`
+    ElMessage.warning(msg)
     return
   }
   const reservedDev = selectedDevices.value.find((d) => d.reserved_slot_id && d.reserved_slot_id !== runSeed.value?.slotId)
@@ -1089,9 +1125,12 @@ const submitRun = async () => {
   submitting.value = true
   try {
     const kinds = selectedDeviceKinds.value
-    const platform = kinds.length === 1
-      ? kinds[0]
-      : (kinds.length > 1 ? 'mixed' : (runForm.value.platform || 'android'))
+    const targetKind = runTargetDeviceKind.value
+    let platform = 'android'
+    if (targetKind === 'web') platform = 'web'
+    else if (kinds.length === 1) platform = kinds[0]
+    else if (kinds.length > 1) platform = 'mixed'
+    else if (targetKind) platform = targetKind
     const coverage = sns.length > 1 ? runForm.value.coverage : 'once'
     const res = await runCaseRunner({
       app_id: appId.value,
@@ -1108,6 +1147,7 @@ const submitRun = async () => {
       requirement_id: runSeed.value?.requirementId || '',
       release_id: runSeed.value?.releaseId || '',
       env_profile: runForm.value.env_profile || runEnvDefault.value || 'test',
+      env_surface: runForm.value.env_surface || undefined,
     })
     const batch = res?.data?.run_id || res?.data?.task_id
     if (!batch) { ElMessage.error('启动失败：未拿到 run_id'); return }
@@ -1133,6 +1173,12 @@ const submitRun = async () => {
     const busy = parseBusyConflict(e)
     if (busy.isReserved) {
       ElMessage.warning(`设备已被排期占用${busy.reservedTitle ? `：${busy.reservedTitle}` : ''}`)
+      return
+    }
+    if (busy.isWebParallelFull) {
+      const max = busy.webParallelMax || 4
+      const active = busy.webParallelActive ?? max
+      ElMessage.warning(`浏览器并行已满（${active}/${max} 路），请等待一路结束或换 Scout 节点`)
       return
     }
     if (busy.isBusy) {
@@ -1211,6 +1257,15 @@ watch(tab, (id) => {
 
 watch(() => route.query.openRun, (v) => {
   if (String(v || '') === '1') consumeOpenRun()
+})
+
+watch(() => runForm.value.env_profile, () => {
+  ensureRunSurfaceSelection()
+  pruneRunDeviceSelection()
+})
+
+watch(() => runForm.value.env_surface, () => {
+  pruneRunDeviceSelection()
 })
 
 watch(() => runForm.value.sns, (sns) => {
@@ -1580,8 +1635,45 @@ watch(selectedCaseIds, () => {
       </div>
     </el-dialog>
 
-    <el-dialog v-model="newRunVisible" :title="runDialogTitle" width="720px" append-to-body align-center class="new-run-dialog mo-fit-dialog">
-      <div class="form">
+    <el-dialog
+      v-model="newRunVisible"
+      :title="runDialogTitle"
+      width="50vw"
+      append-to-body
+      align-center
+      class="new-run-dialog mo-fit-dialog"
+    >
+      <div class="form new-run-form">
+        <div v-if="runConfiguredTargets.length" class="field">
+          <label>被测应用</label>
+          <div class="run-target-cards" role="list">
+            <button
+              v-for="row in runConfiguredTargets"
+              :key="row.id"
+              type="button"
+              role="listitem"
+              class="run-target-card"
+              :class="{ on: runForm.env_surface === row.id }"
+              @click="selectRunTarget(row)"
+            >
+              <div class="run-target-card-head">
+                <strong>{{ channelTitle(row) }}</strong>
+                <code class="run-target-key">{{ channelSurfaceKey(row) }}</code>
+              </div>
+              <span class="run-target-meta">{{ channelKindText(row) }}</span>
+              <span class="run-target-val">{{ row.configuredValue }}</span>
+            </button>
+          </div>
+          <div class="hint">左右滑动选择。唯一键为 <code>channel.id</code>（多 Web / 国内国外用不同端 + 简称区分）；跑批带 <code>env_surface</code> 解析 URL / 包名。</div>
+        </div>
+        <div v-else-if="runEnvDoc" class="field">
+          <label>被测应用</label>
+          <div class="hint warn">当前运行环境下没有已填写的应用目标，请先在「配置 → 环境配置」填写包名或 Web 地址。</div>
+        </div>
+        <div v-else class="field">
+          <label>被测应用</label>
+          <div class="hint warn">未加载到项目环境，请先在「配置 → 环境配置」中维护环境列表。</div>
+        </div>
         <div v-if="runEnvironments.length" class="field">
           <label>运行环境</label>
           <el-select v-model="runForm.env_profile" style="width:100%" teleported filterable>
@@ -1592,13 +1684,14 @@ watch(selectedCaseIds, () => {
               :value="e.key"
             />
           </el-select>
-          <div class="hint">来自「配置 → 环境配置」；本批次租号、包名 / Bundle 按所选环境读取。</div>
-        </div>
-        <div v-else class="field">
-          <div class="hint warn">未加载到项目环境，请先在「配置 → 环境配置」中维护环境列表。</div>
+          <div class="hint">来自「配置 → 环境配置」；租号与密钥按所选环境读取。</div>
         </div>
         <div class="field">
-          <label>设备（可多选；不选则由测试工程师按用例申请）</label>
+          <label>
+            设备（可多选；不选则由测试工程师按用例申请）
+            <template v-if="runTargetDeviceKind === 'web'"> · 仅浏览器</template>
+            <template v-else-if="runTargetDeviceKind === 'android'"> · 仅 Android</template>
+          </label>
           <el-select
             v-model="runForm.sns"
             multiple
@@ -1611,7 +1704,7 @@ watch(selectedCaseIds, () => {
             popper-class="device-select-popper"
           >
             <el-option
-              v-for="d in devices"
+              v-for="d in runFilteredDevices"
               :key="d.sn"
               :label="formatDeviceTag(d)"
               :value="d.sn"
@@ -1621,15 +1714,25 @@ watch(selectedCaseIds, () => {
                 <span class="dev-name">{{ formatDeviceTag(d) }}</span>
                 <small>
                   {{ formatDeviceMeta(d) }}
-                  <template v-if="d.busy_task_id"> · 占用中 {{ shortTaskId(d.busy_task_id) }}</template>
+                  <template v-if="isWebSlotDevice(d)"> · {{ formatWebParallelUsage(d) }}<template v-if="deviceWebParallelFull(d)"> · 已满</template></template>
+                  <template v-else-if="deviceRunBlockedByBusy(d)"> · 占用中 {{ shortTaskId(d.busy_task_id) }}</template>
                   <template v-else-if="d.reserved_slot_id"> · 排期占用 {{ d.reserved_title || '其他窗口' }}</template>
                 </small>
               </div>
             </el-option>
           </el-select>
-          <div v-if="!devices.length" class="hint warn">暂无在线设备</div>
+          <div v-if="!runFilteredDevices.length" class="hint warn">
+            <template v-if="runTargetDeviceKind === 'web'">暂无在线浏览器节点</template>
+            <template v-else-if="runTargetDeviceKind === 'android'">暂无在线 Android 设备</template>
+            <template v-else>暂无在线设备</template>
+          </div>
           <div v-else-if="busySelectedDevice" class="hint warn">
-            {{ formatDeviceTag(busySelectedDevice) }} 正在跑任务 {{ shortTaskId(busySelectedDevice.busy_task_id) }}，请换一台或等它结束。
+            <template v-if="deviceWebParallelFull(busySelectedDevice)">
+              {{ formatDeviceTag(busySelectedDevice) }} 浏览器并行已满（{{ formatWebParallelUsage(busySelectedDevice) }}），请等待一路结束或换节点。
+            </template>
+            <template v-else>
+              {{ formatDeviceTag(busySelectedDevice) }} 正在跑任务 {{ shortTaskId(busySelectedDevice.busy_task_id) }}，请换一台或等它结束。
+            </template>
           </div>
           <div v-else-if="reservedSelectedDevice" class="hint warn">
             {{ formatDeviceTag(reservedSelectedDevice) }} 当前被排期占用（{{ reservedSelectedDevice.reserved_title || '其他窗口' }}），请换一台或等窗口结束。
@@ -1676,28 +1779,7 @@ watch(selectedCaseIds, () => {
             环境：{{ envLabel(runSeed.envProfile) }}
           </div>
         </div>
-        <div class="field">
-          <label>套件</label>
-          <div class="suite-pick">
-            <el-select
-              :model-value="selectedSuiteId"
-              placeholder="先选套件，或下面手勾"
-              clearable
-              style="width:100%"
-              @change="applySuiteId"
-            >
-              <el-option
-                v-for="s in suites"
-                :key="s.id"
-                :label="`${s.name}（${suiteCaseIds(s, cases).length}）`"
-                :value="s.id"
-              />
-            </el-select>
-            <el-button size="small" text :disabled="!selectedCaseIds.length" @click="saveSuiteFromRun">存为套件</el-button>
-          </div>
-          <p v-if="!suites.length" class="hint">暂无套件</p>
-        </div>
-        <div class="field">
+        <div class="field field-cases-grow">
           <div class="case-head">
             <label>按模块勾选用例{{ selectedCaseIds.length ? ` · 已选 ${selectedCaseIds.length}` : '' }}</label>
             <span class="case-head-actions">
@@ -2090,10 +2172,111 @@ watch(selectedCaseIds, () => {
 .cases { max-height: 320px; overflow-y: auto; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
 .case { display: block; margin: 0 0 6px; }
 .opts { display: flex; gap: 16px; flex-wrap: wrap; }
-.suite-pick { display: flex; align-items: center; gap: 8px; }
+.run-target-cards {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.run-target-card {
+  flex: 0 0 min(300px, 88%);
+  scroll-snap-align: start;
+  text-align: left;
+  border: 1px solid #e3e8f0;
+  border-radius: 14px;
+  background: #fff;
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #111827;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.run-target-card:hover {
+  border-color: var(--el-color-primary-light-5);
+}
+.run-target-card.on {
+  border-color: var(--mo-primary);
+  background: var(--mo-primary-soft);
+  box-shadow: 0 0 0 1px var(--mo-primary);
+}
+.run-target-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.run-target-card-head strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+.run-target-key {
+  font-size: 11px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+}
+.run-target-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+.run-target-val {
+  font-size: 12px;
+  color: #334155;
+  word-break: break-all;
+  line-height: 1.35;
+}
 </style>
 
 <style>
+.new-run-dialog.el-dialog {
+  width: min(960px, 96vw) !important;
+  min-width: 0;
+  max-width: 96vw;
+  margin: auto !important;
+  height: min(80vh, calc(100vh - 48px));
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+@media (min-width: 1280px) {
+  .new-run-dialog.el-dialog {
+    width: max(50vw, min(960px, 96vw)) !important;
+  }
+}
+.new-run-dialog .el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: none;
+}
+.new-run-form {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+.new-run-form .field-cases-grow {
+  flex: 1;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+}
+.new-run-form .field-cases-grow .cases {
+  flex: 1;
+  max-height: none;
+  min-height: 120px;
+}
 .device-select-popper .dev-opt {
   display: flex;
   flex-direction: column;
