@@ -61,7 +61,7 @@ const notifyForm = ref({
   on_verdict: true,
 })
 const figmaForm = ref({ access_token: '', default_file_url: '' })
-const gmailOtpForm = ref({ app_password: '' })
+const gmailOtpForm = ref({ inbox_address: '', app_password: '' })
 const zentaoForm = ref({ url: '', account: '', password: '', token: '' })
 const DEFAULT_ZENTAO_TITLE_TEMPLATE = '[{project}] {title}'
 const DEFAULT_ZENTAO_STEPS_TEMPLATE = [
@@ -352,7 +352,10 @@ const applyConfig = (data) => {
     access_token: '',
     default_file_url: data?.figma?.default_file_url || '',
   }
-  gmailOtpForm.value = { app_password: '' }
+  gmailOtpForm.value = {
+    inbox_address: data?.gmail_otp?.inbox_address || '',
+    app_password: '',
+  }
   zentaoForm.value = {
     url: cfg.url || '',
     account: cfg.account || '',
@@ -544,6 +547,7 @@ const saveNotify = () => persist({
 
 const saveGmailOtp = async () => {
   const ok = await persist({
+    inbox_address: gmailOtpForm.value.inbox_address.trim(),
     app_password: gmailOtpForm.value.app_password,
   })
   if (ok) gmailOtpForm.value.app_password = ''
@@ -1096,15 +1100,23 @@ onUnmounted(() => {
     <section v-else-if="pluginId === 'gmail_otp' && tab === 'connect'" class="settings-card">
       <div class="settings-kicker">Gmail 收信</div>
       <p class="settings-page-desc">
-        项目环境里配置统一收件箱地址；此处填写你的
+        收件邮箱与
         <a href="https://support.google.com/accounts/answer/185833" target="_blank" rel="noopener">应用专用密码</a>
-        ，跑批时用你的密钥登录该收件箱并匹配租号邮箱别名。
+        须为同一 Google 账号（个人配置，跑批时用你的账号登录 IMAP 并匹配租号邮箱别名）。
       </p>
       <el-form label-position="top" class="settings-form-stack">
+        <el-form-item label="收件邮箱（IMAP 登录账号）">
+          <el-input
+            v-model="gmailOtpForm.inbox_address"
+            placeholder="qaproject@gmail.com"
+            spellcheck="false"
+            clearable
+          />
+        </el-form-item>
         <el-form-item label="应用专用密码">
           <SecretField
             v-model="gmailOtpForm.app_password"
-            :configured="!!plugin?.gmail_otp?.configured && !gmailOtpForm.app_password"
+            :configured="!!plugin?.gmail_otp?.has_app_password && !gmailOtpForm.app_password"
             placeholder="16 位应用专用密码"
           />
         </el-form-item>

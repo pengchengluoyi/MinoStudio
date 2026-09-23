@@ -20,8 +20,10 @@ function isTerminalEngineStatus(st) {
 
 export function isLiveEngineStep(s, opts = {}) {
   if (opts.finished) return false
+  if (s?.execution_kind === 'guard_skip' || s?.guard_skip) return false
   const st = normEngineStatus(s?.status)
   const rs = normEngineStatus(s?.result_status)
+  if (s?.device_dispatched === false && (st === 'skipped' || rs === 'skipped')) return false
   if (isTerminalEngineStatus(st) || isTerminalEngineStatus(rs)) return false
   if (!(LIVE.has(st) || LIVE.has(rs))) return false
   const siblings = opts.siblings

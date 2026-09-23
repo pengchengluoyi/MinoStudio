@@ -166,11 +166,13 @@ function applyTraceOntoStep(s, e) {
   const cap = e?.capability_id || e?.event_kind
   if (cap && (!s.cap || s.cap === 'done')) s.cap = cap
   if (e?.executor_used && !s.executor) s.executor = e.executor_used
-  const settled = settleStatus(e?.status)
+  const settled = settleStatus(e?.result_status || e?.status)
   if (settled) {
-    s.result_status = e.status
+    s.result_status = e.result_status || e.status
     s.status = settled
   }
+  if (e?.device_dispatched != null) s.device_dispatched = e.device_dispatched
+  if (e?.execution_kind) s.execution_kind = e.execution_kind
   if (e?.summary || e?.error) s.summary = e.summary || e.error
   if (e?.lane) s.lane = e.lane
 }
@@ -239,9 +241,10 @@ function applyAgentEvent(d) {
     if (d.step) activeStep.value = d.step
   }
   else if (d.phase === 'step') {
+    const stepSt = d.status === 'continue' ? 'dispatching' : d.status
     upsert(d.step, {
       thought: d.thought,
-      status: d.status,
+      status: stepSt,
       action: d.action,
       thumb: normalizeThumb(d.thumb),
       ...(d.action?.capability_id || d.capability_id
@@ -267,9 +270,9 @@ function applyAgentEvent(d) {
     activeStep.value = d.step
   }
   else if (d.phase === 'result') {
-    const settled = settleStatus(d.result_status)
+    const settled = settleStatus(d.result_status || d.status)
     upsert(d.step, {
-      result_status: d.result_status,
+      result_status: d.result_status || d.status,
       ...(settled ? { status: settled } : {}),
       summary: d.summary,
       elapsed: d.elapsed_ms || d.elapsed,
@@ -277,6 +280,9 @@ function applyAgentEvent(d) {
       ...(d.capability_id ? { cap: d.capability_id } : {}),
       ...(knowledge ? { knowledge } : {}),
       ...(d.lane ? { lane: d.lane } : {}),
+      ...(d.device_dispatched != null ? { device_dispatched: d.device_dispatched } : {}),
+      ...(d.execution_kind ? { execution_kind: d.execution_kind } : {}),
+      ...(d.execution_kind === 'guard_skip' ? { guard_skip: true } : {}),
     })
     if (d.step) activeStep.value = d.step
   }
@@ -651,12 +657,17 @@ function cardsOf(task) {
   return steps.value.filter((s) => set.has(s.step))
 }
 
+function visibleCardCount(task) {
+  return cardsOf(task).length
+}
+
 const statusText = (s) => {
   if (isLimit.value && (s === overall.value || s === 'partial')) return '执行超时'
   return ({
     running: '执行中', queued: '排队',
-    continue: '决策', thinking: '看图中', checking: '校验中', done: '完成', give_up: '放弃', ask_human: '请求人工',
-    pass: '成功', fail: '失败', blocked: '阻塞', skipped: '跳过', declined: '拒绝',
+    continue: '决策', dispatching: '下发中', thinking: '看图中', checking: '校验中', done: '完成', give_up: '放弃', ask_human: '请求人工',
+    pass: '成功', fail: '失败', blocked: '阻塞', skipped: '未下发', declined: '拒绝',
+    guard_skip: '守卫拦截',
     partial: '执行超时',
   })[s] || s || ''
 }
@@ -1025,7 +1036,7 @@ defineExpose({ goal, overall, finished })
                 <span class="crt-st">
                   <span v-if="task.gapTag" class="crt-gap" :title="task.msg || task.gapTag">{{ task.gapTag }}</span>
                   <template v-else>{{ taskStatusLabel(task) }}</template>
-                  <template v-if="task.cardNos.length && task.status !== 'run'"> · {{ task.cardNos.length }} 张卡片</template>
+                  <template v-if="visibleCardCount(task) && task.status !== 'run'"> · {{ visibleCardCount(task) }} 张卡片</template>
                 </span>
               </button>
               <div v-if="openTaskId === task.id" class="crt-cards">
@@ -1051,8 +1062,9 @@ defineExpose({ goal, overall, finished })
                   <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
                   <div class="et-body">
                     <div class="et-head">
-                      <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
-                      <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
+                      <span v-if="s.execution_kind === 'guard_skip' || s.guard_skip" class="et-badge warn">{{ statusText('guard_skip') }}</span>
+                      <span v-else-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
+                      <span v-if="s.result_status && s.result_status !== s.status && s.execution_kind !== 'guard_skip'" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
                       <span class="et-cap">{{ capabilityLabel(s.cap) || s.cap || '' }}<span v-if="channelLabel(s.executor)" class="et-via">{{ channelLabel(s.executor) }}</span></span>
                       <span v-if="liveStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
                       <span v-else class="et-ms">{{ fmtDuration(s.elapsed) }}</span>
@@ -1126,8 +1138,9 @@ defineExpose({ goal, overall, finished })
             <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
             <div class="et-body">
               <div class="et-head">
-                <span v-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
-                <span v-if="s.result_status && s.result_status !== s.status" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
+                <span v-if="s.execution_kind === 'guard_skip' || s.guard_skip" class="et-badge warn">{{ statusText('guard_skip') }}</span>
+                <span v-else-if="s.status" class="et-badge" :class="statusClass(s.status)">{{ statusText(s.status) }}</span>
+                <span v-if="s.result_status && s.result_status !== s.status && s.execution_kind !== 'guard_skip'" class="et-badge" :class="statusClass(s.result_status)">{{ statusText(s.result_status) }}</span>
                 <span class="et-cap">{{ capabilityLabel(s.cap) || s.cap || '' }}<span v-if="channelLabel(s.executor)" class="et-via">{{ channelLabel(s.executor) }}</span></span>
                 <span v-if="liveStep(s)" class="et-ms live"><span class="crt-spin sm" /> 执行中</span>
                 <span v-else class="et-ms">{{ fmtDuration(s.elapsed) }}</span>

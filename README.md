@@ -25,4 +25,4 @@ Projects, cases, run, HITL, Agent, plugins, model keys, runtime / devices, Scout
 
 See `docs/ELECTRON.md` and `docs/SCOUT_INSTALL.md`.
 
-Platform admin (accounts, roles, packs, SMTP) lives in **Mino Console**.
+账号、发信 SMTP、扩展包与插件凭证在 **Mino Studio → 设置**；Console 侧重技能 / Jobs / 编排与平台库存只读视图。

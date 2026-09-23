@@ -73,22 +73,21 @@
       </div>
 
       <div class="channel-head">
-        <span>项目 Gmail 收件箱</span>
+        <span>Gmail 收信（可选兜底）</span>
       </div>
       <div class="field-list">
         <div class="field-row">
           <div class="field-label">
-            <span class="field-name">收件地址</span>
-            <span class="field-meta">全项目唯一；号池用 + 别名进此信箱</span>
+            <span class="field-name">项目级收件地址</span>
+            <span class="field-meta">推荐在「设置 → 插件 → Gmail 收信」配置邮箱+密码（个人）</span>
           </div>
           <div class="field-control">
             <el-input
               v-model="gmailInboxAddress"
-              placeholder="qaproject@gmail.com"
+              placeholder="仅当未配个人插件时作为兜底"
               spellcheck="false"
               clearable
             />
-            <p class="field-note">IMAP 应用专用密码在 Studio「插件 → Gmail 收信」配置（每用户）。</p>
           </div>
         </div>
       </div>
