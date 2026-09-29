@@ -176,6 +176,40 @@ function wireframeForState(doc, sid) {
   return wf[sid] || { regions: [], chrome: {}, screen: { w: 1080, h: 1920 }, source: 'empty' }
 }
 
+function gcdInt(a, b) {
+  let x = Math.abs(Math.trunc(a))
+  let y = Math.abs(Math.trunc(b))
+  while (y) {
+    const t = x % y
+    x = y
+    y = t
+  }
+  return x || 1
+}
+
+/** 采集屏尺寸 → 架构图节点画布比例（横屏 Web / 竖屏 App 等）。 */
+export function wireframeScreenMetrics(wf, baseWidth = 260) {
+  const screenW = Math.max(1, Number(wf?.screen?.w || 1080))
+  const screenH = Math.max(1, Number(wf?.screen?.h || 1920))
+  const bw = Math.max(80, Number(baseWidth) || 260)
+  const canvasHeight = Math.round(bw * (screenH / screenW))
+  const g = gcdInt(screenW, screenH)
+  return {
+    screenW,
+    screenH,
+    baseWidth: bw,
+    canvasHeight,
+    aspectRatio: `${screenW} / ${screenH}`,
+    aspectLabel: `${screenW / g}:${screenH / g}`,
+    landscape: screenW >= screenH,
+  }
+}
+
+function wireframeNodeOuterHeight(wf, { baseWidth, head, metaExtra, padding }) {
+  const { canvasHeight } = wireframeScreenMetrics(wf, baseWidth)
+  return head + metaExtra + canvasHeight + padding
+}
+
 function regionArea(region) {
   const rect = region?.rect || {}
   return Number(rect.w || 0) * Number(rect.h || 0)
@@ -306,7 +340,7 @@ function applyNavHintsToWireframe(wf, stateSid, edges) {
   return out
 }
 
-function buildFlowBlockShellNodes(doc, layoutPos, wfW, wfH, { enabled = true } = {}) {
+function buildFlowBlockShellNodes(doc, layoutPos, wfW, wfH, { enabled = true, nodeHeights = null } = {}) {
   if (!enabled) return []
   const stateIds = new Set(
     (Array.isArray(doc?.states) ? doc.states : []).map((s) => stateId(s)).filter(Boolean),
@@ -337,8 +371,9 @@ function buildFlowBlockShellNodes(doc, layoutPos, wfW, wfH, { enabled = true } =
     for (const m of members) {
       minX = Math.min(minX, m.x)
       minY = Math.min(minY, m.y)
+      const nh = Number(nodeHeights?.get?.(m.sid) || wfH)
       maxX = Math.max(maxX, m.x + wfW)
-      maxY = Math.max(maxY, m.y + wfH)
+      maxY = Math.max(maxY, m.y + nh)
     }
     shells.push({
       id: `__block__${bid}`,
@@ -517,13 +552,27 @@ function wireframeHasHotspot(wf, regionKey) {
   return wf.regions.some((r) => regionHotspotKey(r) === regionKey)
 }
 
-/** Atlas 架构图：固定网格，避免 tree 低估 slot 节点高度导致重叠。 */
-function layoutAtlasArchGrid(nodes, { wfW, wfH, colGap = 112, rowGap = 148, maxCols = 3 }) {
+/** Atlas 架构图：固定网格；行高按节点实际高度（随采集宽高比变化）。 */
+function layoutAtlasArchGrid(nodes, { wfW, colGap = 112, rowGap = 56, maxCols = 3 }) {
   const visible = nodes.filter((n) => String(n.id || '') !== NAV_ROOT_ID)
   const colCount = Math.min(maxCols, Math.max(1, visible.length))
   const indexOf = new Map(visible.map((n, i) => [String(n.id), i]))
   const padX = 48
   const padY = 48
+  const rowHeights = []
+  for (let i = 0; i < visible.length; i += colCount) {
+    let maxH = 0
+    for (let c = 0; c < colCount && i + c < visible.length; c += 1) {
+      maxH = Math.max(maxH, Number(visible[i + c].height || 0))
+    }
+    rowHeights.push(maxH)
+  }
+  const rowY = []
+  let yAcc = padY
+  for (let r = 0; r < rowHeights.length; r += 1) {
+    rowY.push(yAcc)
+    yAcc += rowHeights[r] + rowGap
+  }
   return nodes.map((n) => {
     const id = String(n.id || '')
     if (id === NAV_ROOT_ID) return n
@@ -534,7 +583,7 @@ function layoutAtlasArchGrid(nodes, { wfW, wfH, colGap = 112, rowGap = 148, maxC
     return {
       ...n,
       x: padX + col * (wfW + colGap),
-      y: padY + row * (wfH + rowGap),
+      y: rowY[row] ?? padY,
       fixed: true,
     }
   })
@@ -746,10 +795,17 @@ export function docToRelationGraph(doc, options = {}) {
 
   const WF_W = 260
   const WF_HEAD = 40
-  const WF_CANVAS_H = Math.round(WF_W * (16 / 9))
   const archMode = String(options.variant || '') === 'arch'
   const WF_META_EXTRA = archMode ? 44 : 0
-  const WF_H = WF_HEAD + WF_META_EXTRA + WF_CANVAS_H + 12
+  const WF_PAD = 12
+  const defaultWf = wireframeForState(doc, '')
+  const defaultOuterH = wireframeNodeOuterHeight(defaultWf, {
+    baseWidth: WF_W,
+    head: WF_HEAD,
+    metaExtra: WF_META_EXTRA,
+    padding: WF_PAD,
+  })
+  const nodeHeights = new Map()
   const archView = String(options.archView || 'structure')
   const layoutPos = doc?.meta?.studio_layout?.states || {}
   const flowBlockByState = flowBlockMap(doc)
@@ -833,11 +889,21 @@ export function docToRelationGraph(doc, options = {}) {
       wfByState.set(sid, wf)
     }
     if (!rootId && (sid === launchId || sid === homeStateId || isEntry)) rootId = sid
+    const wfMetrics = wireframeScreenMetrics(wf, WF_W)
+    const nodeOuterH = hasWf
+      ? wireframeNodeOuterHeight(wf, {
+        baseWidth: WF_W,
+        head: WF_HEAD,
+        metaExtra: WF_META_EXTRA,
+        padding: WF_PAD,
+      })
+      : isEntry ? 76 : 80
+    if (hasWf) nodeHeights.set(sid, nodeOuterH)
     nodes.push({
       id: sid,
       text: stateDisplayLabel(st),
       width: hasWf ? WF_W : isEntry ? 148 : 168,
-      height: hasWf ? WF_H : isEntry ? 76 : 80,
+      height: nodeOuterH,
       data: {
         stateId: sid,
         kind: st.kind || 'page',
@@ -861,6 +927,7 @@ export function docToRelationGraph(doc, options = {}) {
         flowBlockId: layoutBlockId,
         flowBlockName: layoutBlockId ? fb?.display_name || '' : '',
         navOutgoing,
+        wireframeMetrics: wfMetrics,
       },
     })
   }
@@ -1027,13 +1094,14 @@ export function docToRelationGraph(doc, options = {}) {
       if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y))) return n
       return { ...n, x: Number(pos.x), y: Number(pos.y), fixed: true }
     })
-    const shells = buildFlowBlockShellNodes(doc, layoutPosFinal, WF_W, WF_H, {
+    const shells = buildFlowBlockShellNodes(doc, layoutPosFinal, WF_W, defaultOuterH, {
       enabled: true,
+      nodeHeights,
     })
     laidOutNodes = [...shells, ...laidOutNodes]
   } else if (archMode && isAtlas && !useFixed) {
     useFixed = true
-    laidOutNodes = layoutAtlasArchGrid(laidOutNodes, { wfW: WF_W, wfH: WF_H })
+    laidOutNodes = layoutAtlasArchGrid(laidOutNodes, { wfW: WF_W })
   }
 
   if (archMode && isAtlas) {
@@ -1097,6 +1165,11 @@ export function docToRelationGraph(doc, options = {}) {
     fakeLines = split.fakeLines
   }
 
+  const maxNodeH = laidOutNodes.reduce(
+    (m, n) => Math.max(m, Number(n.height || 0)),
+    defaultOuterH,
+  )
+
   return {
     rootId: graphRootId,
     nodes: laidOutNodes,
@@ -1111,7 +1184,7 @@ export function docToRelationGraph(doc, options = {}) {
           layoutName: 'center',
           from: 'left',
           min_per_width: archMode ? WF_W + 48 : 280,
-          min_per_height: archMode ? WF_H + 48 : 220,
+          min_per_height: archMode ? maxNodeH + 48 : 220,
         },
   }
 }

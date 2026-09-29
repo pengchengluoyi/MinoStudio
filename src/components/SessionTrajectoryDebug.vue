@@ -14,6 +14,7 @@ const router = useRouter()
 const route = useRoute()
 
 const expanded = ref([])
+const contextTab = ref('slots')
 
 const data = computed(() => props.turnsData || null)
 const turns = computed(() => data.value?.turns || [])
@@ -65,6 +66,24 @@ const capInMenu = (t, capId) => {
   const flags = t?.menu_flags
   if (!flags?.cap_ids?.length) return false
   return flags.cap_ids.includes(capId)
+}
+
+const traceMilestoneLines = (trace) => {
+  const sc = trace?.success_criteria
+  const ms = sc?.milestones
+  if (!Array.isArray(ms) || !ms.length) return []
+  return ms.map((m) => {
+    const st = m?.status || 'pending'
+    const title = m?.title || m?.id || '—'
+    const kind = m?.kind ? ` · ${m.kind}` : ''
+    return `[${st}] ${title}${kind}`
+  })
+}
+
+const historyPreview = (trace) => {
+  const lines = trace?.history_step || trace?.history_full
+  if (!Array.isArray(lines) || !lines.length) return ''
+  return lines.slice(-12).join('\n')
 }
 
 const openDispatch = (id) => {
@@ -189,17 +208,70 @@ watch(
             </article>
           </section>
 
-          <section v-if="t.slots" class="traj-card">
-            <h4>注入 Slots</h4>
-            <div v-if="t.slots.session_block" class="traj-slot">
-              <span class="traj-label">session_block</span>
-              <pre>{{ clipText(t.slots.session_block, 400) }}</pre>
-            </div>
-            <div v-if="t.slots.goal" class="traj-slot">
-              <span class="traj-label">goal</span>
-              <pre>{{ clipText(t.slots.goal, 200) }}</pre>
-            </div>
-            <PayloadView title="完整 slots" :value="t.slots" />
+          <section v-if="t.slots || t.trace" class="traj-card traj-context">
+            <h4>注入上下文（P0）</h4>
+            <el-tabs v-model="contextTab" class="traj-ctx-tabs">
+              <el-tab-pane label="Slots（实际进 prompt）" name="slots">
+                <template v-if="t.slots">
+                  <div v-if="t.slots.success_criteria" class="traj-slot">
+                    <span class="traj-label">success_criteria</span>
+                    <PayloadView :value="t.slots.success_criteria" />
+                  </div>
+                  <div v-if="t.slots.session_json" class="traj-slot">
+                    <span class="traj-label">session_json</span>
+                    <PayloadView :value="t.slots.session_json" />
+                  </div>
+                  <div v-if="t.slots.accounts_json" class="traj-slot">
+                    <span class="traj-label">accounts_json</span>
+                    <PayloadView :value="t.slots.accounts_json" />
+                  </div>
+                  <div v-if="t.slots.history_block" class="traj-slot">
+                    <span class="traj-label">history_block</span>
+                    <pre>{{ clipText(t.slots.history_block, 800) }}</pre>
+                  </div>
+                  <div v-if="t.slots.session_block" class="traj-slot">
+                    <span class="traj-label">session_block（legacy）</span>
+                    <pre>{{ clipText(t.slots.session_block, 400) }}</pre>
+                  </div>
+                  <div v-if="t.slots.goal" class="traj-slot">
+                    <span class="traj-label">goal</span>
+                    <pre>{{ clipText(t.slots.goal, 200) }}</pre>
+                  </div>
+                  <PayloadView title="完整 slots" :value="t.slots" />
+                </template>
+                <p v-else class="traj-muted">本 turn 无 context/slots 事件</p>
+              </el-tab-pane>
+              <el-tab-pane label="Trace（排查全量）" name="trace">
+                <template v-if="t.trace">
+                  <div class="traj-trace-meta">
+                    <span>step {{ t.trace.case_step ?? '—' }}</span>
+                    <span>phase {{ t.trace.phase || '—' }}</span>
+                    <span v-if="t.trace.menu_snapshot?.cap_ids?.length">
+                      menu {{ t.trace.menu_snapshot.cap_ids.length }} caps
+                    </span>
+                  </div>
+                  <div v-if="traceMilestoneLines(t.trace).length" class="traj-slot">
+                    <span class="traj-label">milestones（trace）</span>
+                    <pre>{{ traceMilestoneLines(t.trace).join('\n') }}</pre>
+                  </div>
+                  <div v-if="historyPreview(t.trace)" class="traj-slot">
+                    <span class="traj-label">history_step（末 12 行）</span>
+                    <pre>{{ historyPreview(t.trace) }}</pre>
+                  </div>
+                  <div v-if="t.trace.checkpoints_block_full" class="traj-slot">
+                    <span class="traj-label">checkpoints_block_full</span>
+                    <pre>{{ clipText(t.trace.checkpoints_block_full, 1200) }}</pre>
+                  </div>
+                  <div v-if="t.trace.device_brief && Object.keys(t.trace.device_brief).length" class="traj-slot">
+                    <span class="traj-label">device_brief</span>
+                    <PayloadView :value="t.trace.device_brief" />
+                  </div>
+                  <PayloadView v-if="t.trace.llm_injection" title="llm_injection" :value="t.trace.llm_injection" />
+                  <PayloadView title="完整 trace" :value="t.trace" />
+                </template>
+                <p v-else class="traj-muted">本 turn 无 context/trace 事件</p>
+              </el-tab-pane>
+            </el-tabs>
           </section>
 
           <section v-if="toolPairs(t).length" class="traj-card">
@@ -417,4 +489,20 @@ watch(
 }
 .traj-tool .pass { color: #047857; }
 .traj-tool .fail { color: #b91c1c; }
+.traj-context :deep(.el-tabs__header) {
+  margin-bottom: 10px;
+}
+.traj-trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 10px;
+}
+.traj-muted {
+  margin: 0;
+  font-size: 12px;
+  color: #9ca3af;
+}
 </style>

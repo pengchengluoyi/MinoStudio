@@ -180,7 +180,7 @@ const onMerge = () => {
   <el-dialog
     :model-value="visible"
     :title="title || (isPreview ? '页面预览' : '编辑页面')"
-    :width="isPreview ? 'min(96vw, 960px)' : 'min(96vw, 640px)'"
+    :width="isPreview ? 'min(96vw, 1080px)' : 'min(96vw, 640px)'"
     class="nav-graph-inspect-dialog"
     destroy-on-close
     @update:model-value="(v) => emit('update:visible', v)"
@@ -322,12 +322,8 @@ const onMerge = () => {
   padding: 4px 0 8px;
 }
 
-.preview-wrap :deep(.nav-wireframe.is-preview .wire-canvas) {
-  width: min(100%, 440px);
-  max-width: 440px;
-  min-height: min(70vh, 760px);
-  height: auto;
-  aspect-ratio: 9 / 16;
+.preview-wrap :deep(.nav-wireframe.is-preview) {
+  width: 100%;
 }
 
 .edit-form {

@@ -100,14 +100,48 @@ onUnmounted(() => {
   if (revokeUrl) URL.revokeObjectURL(revokeUrl)
 })
 
-const canvasBg = computed(() => {
-  if (!screenBlobUrl.value) return {}
-  return {
-    backgroundImage: `url(${screenBlobUrl.value})`,
-    backgroundSize: '100% 100%',
-    backgroundPosition: 'center',
-    backgroundRepeat: 'no-repeat',
+const screenSize = computed(() => {
+  const w = Math.max(1, Number(screen.value.w || 1080))
+  const h = Math.max(1, Number(screen.value.h || 1920))
+  return { w, h }
+})
+
+const canvasAspectRatio = computed(() => {
+  const { w, h } = screenSize.value
+  return `${w} / ${h}`
+})
+
+function fitCanvasBox(sw, sh, maxW, maxH) {
+  const w = Math.max(1, sw)
+  const h = Math.max(1, sh)
+  let cw = maxW
+  let ch = (cw * h) / w
+  if (ch > maxH) {
+    ch = maxH
+    cw = (ch * w) / h
   }
+  return { width: Math.round(cw), height: Math.round(ch) }
+}
+
+const canvasFrameStyle = computed(() => {
+  const { w, h } = screenSize.value
+  const style = {
+    aspectRatio: canvasAspectRatio.value,
+  }
+  if (props.preview) {
+    const box = fitCanvasBox(w, h, 560, 680)
+    style.width = `${box.width}px`
+    style.height = `${box.height}px`
+    style.maxWidth = '100%'
+    style.flexShrink = '0'
+  }
+  if (screenBlobUrl.value) {
+    style.backgroundImage = `url(${screenBlobUrl.value})`
+    style.backgroundSize = '100% 100%'
+    style.backgroundPosition = 'center'
+    style.backgroundRepeat = 'no-repeat'
+  }
+  return style
 })
 
 const styleRect = (rect) => {
@@ -171,7 +205,7 @@ function showWireLabel(r) {
       }"
       role="img"
       aria-label="屏面线框"
-      :style="canvasBg"
+      :style="canvasFrameStyle"
     >
       <template v-for="r in regions" :key="`${r.source}-${r.id}`">
         <RGConnectTarget
@@ -247,7 +281,7 @@ function showWireLabel(r) {
   position: relative;
   width: 100%;
   max-width: 280px;
-  aspect-ratio: 9 / 16;
+  aspect-ratio: var(--wire-aspect-fallback, 9 / 16);
   background: #f8fafc;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
@@ -281,14 +315,22 @@ function showWireLabel(r) {
   border-color: #b45309 !important;
 }
 
+.nav-wireframe.is-preview {
+  width: 100%;
+  align-items: center;
+}
+
 .nav-wireframe.is-arch-canvas .wire-canvas,
 .nav-wireframe.is-preview .wire-canvas {
   max-width: none;
-  width: 100%;
-  aspect-ratio: 9 / 16;
-  height: auto;
   min-height: 0;
   overflow: hidden;
+}
+
+.nav-wireframe.is-preview .wire-canvas {
+  width: auto;
+  max-width: 100%;
+  min-width: 160px;
 }
 
 .nav-wireframe.is-graph-node.is-arch-canvas {
@@ -301,7 +343,6 @@ function showWireLabel(r) {
 .nav-wireframe.is-graph-node.is-arch-canvas .wire-canvas {
   flex: 0 0 auto;
   width: 100%;
-  aspect-ratio: 9 / 16;
   height: auto;
   max-height: none;
 }
@@ -394,7 +435,7 @@ function showWireLabel(r) {
 .nav-wireframe.is-compact .wire-canvas {
   width: 200px;
   max-width: 200px;
-  min-height: 360px;
+  min-height: 0;
   border-radius: 8px;
 }
 
@@ -407,7 +448,6 @@ function showWireLabel(r) {
 .nav-wireframe.is-graph-node:not(.is-arch-canvas) .wire-canvas {
   width: 100%;
   max-width: none;
-  aspect-ratio: 9 / 16;
   height: auto;
   min-height: 0;
 }

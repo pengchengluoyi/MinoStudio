@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { getProjectEnv } from '@/api/workReport'
 import {
   clearNavCaptures,
   getNavMetrics,
@@ -16,6 +17,18 @@ import { buildIntelOverlay } from '@/utils/appIntelOverlay'
 import { cancelTestingTask, getTestingTask, listTestingTasks, runAppExplore } from '@/api/caseRunner'
 import { useNavFsm } from '@/composables/useNavFsm'
 import NavRelationGraph from '@/views/Testing/NavRelationGraph.vue'
+import {
+  channelRunDeviceKind,
+  channelTitle,
+  getStoredRunEnvProfile,
+  normalizeEnvDoc,
+} from '@/constants/envProfiles'
+import {
+  filterAtlasDocByChannel,
+  getStoredArchEnvSurface,
+  mergeArchGraphSubset,
+  setStoredArchEnvSurface,
+} from '@/utils/navAtlasChannelFilter'
 import '@/views/Settings/settings-ui.css'
 
 const props = defineProps({
@@ -28,6 +41,89 @@ const props = defineProps({
 })
 
 const appIdRef = computed(() => props.appId)
+
+const archEnvDoc = ref(null)
+const archEnvProfile = ref(getStoredRunEnvProfile())
+const archEnvSurface = ref('')
+
+const archChannels = computed(() => {
+  const doc = archEnvDoc.value
+  if (!doc) return []
+  const normalized = normalizeEnvDoc(doc)
+  return (normalized.channels || [])
+    .map((ch) => ({
+      ...ch,
+      id: String(ch?.id || '').trim(),
+    }))
+    .filter((ch) => ch.id)
+})
+
+const ensureArchSurfaceSelection = () => {
+  const rows = archChannels.value
+  if (!rows.length) {
+    archEnvSurface.value = ''
+    return
+  }
+  const cur = String(archEnvSurface.value || '').trim()
+  if (cur && rows.some((r) => r.id === cur)) return
+  const stored = getStoredArchEnvSurface(props.projectId)
+  if (stored && rows.some((r) => r.id === stored)) {
+    archEnvSurface.value = stored
+    return
+  }
+  archEnvSurface.value = rows[0].id
+}
+
+const loadArchProjectEnv = async () => {
+  const pid = String(props.projectId || '').trim()
+  if (!pid) {
+    archEnvDoc.value = null
+    archEnvSurface.value = ''
+    return
+  }
+  try {
+    const res = await getProjectEnv(pid)
+    const data = res?.data || {}
+    const doc = data.env && typeof data.env === 'object' ? data.env : data
+    archEnvDoc.value = normalizeEnvDoc(doc)
+    archEnvProfile.value = getStoredRunEnvProfile()
+    ensureArchSurfaceSelection()
+  } catch {
+    archEnvDoc.value = null
+    archEnvSurface.value = ''
+  }
+}
+
+const onArchSurfaceChange = async (nextId) => {
+  const id = String(nextId || '').trim()
+  archEnvSurface.value = id
+  setStoredArchEnvSurface(props.projectId, id)
+  if (props.section === 'arch') {
+    await loadScreenAtlas(true)
+  } else {
+    graphReloadKey.value += 1
+  }
+}
+
+watch(
+  () => props.projectId,
+  () => {
+    loadArchProjectEnv()
+  },
+  { immediate: true },
+)
+
+watch(archChannels, () => {
+  ensureArchSurfaceSelection()
+})
+
+const archGraphDoc = computed(() => {
+  const raw = graphDoc.value
+  if (!raw || props.section !== 'arch') return raw
+  const surface = String(archEnvSurface.value || '').trim()
+  if (!surface || !archEnvDoc.value) return raw
+  return filterAtlasDocByChannel(raw, surface, archEnvDoc.value, archEnvProfile.value)
+})
 const {
   loading,
   saving,
@@ -109,7 +205,7 @@ const landmarkFromState = (st) => {
 const atlasMode = computed(() => Boolean(graphDoc.value?.meta?.screen_atlas))
 
 const liveSummary = computed(() => {
-  const d = graphDoc.value
+  const d = props.section === 'arch' ? archGraphDoc.value : graphDoc.value
   if (!d) return null
   const states = d.states || []
   const navEdges = (d.edges || []).filter((e) => (e.kind || 'nav') === 'nav')
@@ -197,6 +293,8 @@ const loadScreenAtlas = async (quiet = false, rebuild = false) => {
   try {
     const res = await getNavScreenAtlas(props.appId, {
       project_id: props.projectId || undefined,
+      env_surface: archEnvSurface.value || undefined,
+      env_profile: archEnvProfile.value || undefined,
       nav_view_id: navViewId.value || undefined,
       app_version: atlasAppVersion.value || undefined,
       rebuild: rebuild ? true : undefined,
@@ -278,11 +376,16 @@ const claimRunningExplore = async () => {
 const onStartExplore = async () => {
   exploring.value = true
   try {
+    const ch = archChannels.value.find((c) => c.id === archEnvSurface.value)
+    const plat = channelRunDeviceKind(ch) || 'android'
     const res = await runAppExplore({
       app_id: props.appId,
       max_steps: 80,
       max_idle_steps: 15,
       async_exec: true,
+      platform: plat === 'ios' ? 'ios' : plat === 'web' ? 'web' : 'android',
+      env_profile: archEnvProfile.value || undefined,
+      env_surface: archEnvSurface.value || undefined,
     })
     const task = res?.data || {}
     exploreRunId.value = String(task.run_id || task.task_id || '')
@@ -402,8 +505,12 @@ const syncGraphFromDoc = async () => {
 }
 
 const onGraphDocUpdate = (nextDoc) => {
-  graphDoc.value = nextDoc
-  intelOverlay.value = buildIntelOverlay(nextDoc, intelLinks.value)
+  const merged =
+    props.section === 'arch' && graphDoc.value && nextDoc?.meta?.arch_channel_filter
+      ? mergeArchGraphSubset(graphDoc.value, nextDoc)
+      : nextDoc
+  graphDoc.value = merged
+  intelOverlay.value = buildIntelOverlay(merged, intelLinks.value)
 }
 
 const syncManualEdgesMeta = (body) => {
@@ -431,8 +538,12 @@ const onSaveGraphDoc = async () => {
 
 const onSaveArchDoc = async (nextDoc) => {
   if (!nextDoc) return
-  const manual = (nextDoc.edges || []).filter((e) => e?.meta?.manual)
-  graphDoc.value = nextDoc
+  const body =
+    graphDoc.value && nextDoc?.meta?.arch_channel_filter
+      ? mergeArchGraphSubset(graphDoc.value, nextDoc)
+      : nextDoc
+  const manual = (body.edges || []).filter((e) => e?.meta?.manual)
+  graphDoc.value = body
   try {
     await putAtlasManualEdges(props.appId, {
       edges: manual,
@@ -576,6 +687,17 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => props.appId,
+  (id, prev) => {
+    if (!id || id === prev) return
+    if (props.section === 'arch') {
+      loadScreenAtlas(true)
+      tryAutoSetup(true)
+    }
+  },
+)
+
 onMounted(async () => {
   if (props.section === 'arch') {
     await tryAutoSetup(true)
@@ -622,6 +744,22 @@ onUnmounted(() => {
             </span>
           </div>
           <div class="published-actions">
+            <el-select
+              v-if="archChannels.length > 0"
+              :model-value="archEnvSurface"
+              size="small"
+              class="arch-app-select"
+              placeholder="应用端"
+              filterable
+              @change="onArchSurfaceChange"
+            >
+              <el-option
+                v-for="ch in archChannels"
+                :key="ch.id"
+                :label="channelTitle(ch)"
+                :value="ch.id"
+              />
+            </el-select>
             <el-button
               v-if="exploreLive"
               size="small"
@@ -726,13 +864,18 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="settings-preview-panel published-graph-wrap">
-          <p v-if="graphDoc && !(graphDoc.states || []).length" class="muted empty-hint">
-            暂无屏面采集。跑一条用例或点「发起探索」后，这里会按采集生成架构图。
+          <p v-if="archGraphDoc && !(archGraphDoc.states || []).length" class="muted empty-hint">
+            <template v-if="archEnvSurface && graphDoc && (graphDoc.states || []).length">
+              当前应用端暂无采集。可切换其它端，或在该端跑用例 / 探索后再看架构图。
+            </template>
+            <template v-else>
+              暂无屏面采集。跑一条用例或点「发起探索」后，这里会按采集生成架构图。
+            </template>
           </p>
           <NavRelationGraph
-            v-else-if="graphDoc"
-            :key="`live-${graphReloadKey}`"
-            :doc="graphDoc"
+            v-else-if="archGraphDoc"
+            :key="`live-${graphReloadKey}-${archEnvSurface || 'all'}`"
+            :doc="archGraphDoc"
             :app-id="appId"
             :app-name="appName"
             :project-id="projectId"
@@ -989,6 +1132,10 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.arch-app-select {
+  width: 160px;
 }
 
 .nav-view-select {

@@ -143,6 +143,7 @@ const syncForms = () => {
       case_execution_use: p.configured && p.enabled !== false ? p.case_execution_use === true : false,
       plan_compress_ratio: roundRatio(p.plan_compress_ratio ?? 3, 3),
       web_compress_ratio: roundRatio(p.web_compress_ratio ?? 2, 2),
+      android_compress_ratio: roundRatio(p.android_compress_ratio ?? 1, 1),
       clear_key: false,
       set_default: defaultProvider.value === p.id,
     }
@@ -298,6 +299,7 @@ const save = async (provider) => {
   if (!form) return
   form.plan_compress_ratio = roundRatio(form.plan_compress_ratio, 3)
   form.web_compress_ratio = roundRatio(form.web_compress_ratio, 2)
+  form.android_compress_ratio = roundRatio(form.android_compress_ratio, 1)
   form.set_default = provider.id === caseExecutionProviderId.value
   savingId.value = provider.id
   try {
@@ -359,6 +361,11 @@ const onRatioChange = (provider) => {
 const onWebRatioChange = (provider) => {
   const form = forms[provider.id]
   if (form) form.web_compress_ratio = roundRatio(form.web_compress_ratio, 2)
+}
+
+const onAndroidRatioChange = (provider) => {
+  const form = forms[provider.id]
+  if (form) form.android_compress_ratio = roundRatio(form.android_compress_ratio, 1)
 }
 
 const clearKey = async (provider) => {
@@ -618,7 +625,7 @@ watch(() => route.query.tab, syncTabFromRoute)
                   @change="onRatioChange(p)"
                 />
                 <p class="ratio-hint">
-                  默认 3；1 表示不压缩。示例 1200×2608 → {{ previewSizeHint(forms[p.id].plan_compress_ratio) }}
+                  上传给大模型的统一比例，各渠道都转 JPEG。默认 3；1 表示不缩小。示例 1200×2608 → {{ previewSizeHint(forms[p.id].plan_compress_ratio) }}
                 </p>
               </div>
             </el-form-item>
@@ -634,7 +641,23 @@ watch(() => route.query.tab, syncTabFromRoute)
                   @change="onWebRatioChange(p)"
                 />
                 <p class="ratio-hint">
-                  默认 2；1 表示不压缩。示例 1280×800 → {{ previewWebSizeHint(forms[p.id].web_compress_ratio) }}
+                  只作用于 Web 采集。默认 2；1 表示不压缩。示例 1280×800 → {{ previewWebSizeHint(forms[p.id].web_compress_ratio) }}
+                </p>
+              </div>
+            </el-form-item>
+            <el-form-item label="安卓截图压缩比例">
+              <div class="ratio-field">
+                <el-input-number
+                  v-model="forms[p.id].android_compress_ratio"
+                  :min="1"
+                  :max="10"
+                  :step="0.1"
+                  :precision="1"
+                  controls-position="right"
+                  @change="onAndroidRatioChange(p)"
+                />
+                <p class="ratio-hint">
+                  只作用于安卓采集。默认 1；1 表示不压缩。示例 1200×2608 → {{ previewSizeHint(forms[p.id].android_compress_ratio) }}
                 </p>
               </div>
             </el-form-item>

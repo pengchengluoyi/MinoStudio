@@ -88,6 +88,10 @@ const onDblClick = async () => {
       </span>
       <span v-if="nodeData.morphCount > 0" class="lb morph">多态 {{ nodeData.morphCount }}</span>
       <span v-if="nodeData.evidenceTier" class="lb tier">{{ nodeData.evidenceTier }}</span>
+      <span v-if="nodeData.wireframeMetrics?.aspectLabel" class="lb aspect">
+        {{ nodeData.wireframeMetrics.landscape ? '横屏' : '竖屏' }}
+        {{ nodeData.wireframeMetrics.aspectLabel }}
+      </span>
     </div>
     <NavFsmWireframe
       v-if="nodeData.showWireframe"
@@ -238,6 +242,11 @@ const onDblClick = async () => {
 .lb.tier {
   background: #ede9fe;
   color: #5b21b6;
+}
+
+.lb.aspect {
+  background: #e0f2fe;
+  color: #0369a1;
 }
 
 .rg-nav-node.flow-block {

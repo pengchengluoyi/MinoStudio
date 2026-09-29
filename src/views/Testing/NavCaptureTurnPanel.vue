@@ -269,53 +269,57 @@ onUnmounted(() => {
         <span class="panel-count">{{ total }} 步</span>
       </div>
       <p v-if="total" class="panel-hint">滚轮 / ↑↓ 切换 · 单击复制采集 ID</p>
-      <el-empty v-if="!total" description="该页暂无命中采集" :image-size="56" />
-      <el-scrollbar v-else class="capture-scroll" max-height="min(72vh, 640px)">
-        <button
-          v-for="(ref, idx) in pageTurns"
-          :key="`${ref.session_id}-${ref.turn_id}`"
-          type="button"
-          class="capture-item"
-          :class="{ active: idx === activeIndex }"
-          @click="onItemClick(idx, ref)"
-        >
-          <span class="capture-item-label">{{ turnLabel(ref, (page - 1) * PAGE_SIZE + idx) }}</span>
-          <span class="capture-item-id" :title="captureId(ref)">{{ captureId(ref) }}</span>
-          <span class="capture-item-time">{{ formatAt(ref.at) }}</span>
-        </button>
-      </el-scrollbar>
-      <div v-if="total > PAGE_SIZE" class="pager">
-        <el-button size="small" :disabled="page <= 1" @click="prevPage">上一页</el-button>
-        <span class="pager-text">{{ page }} / {{ pageCount }}</span>
-        <el-button size="small" :disabled="page >= pageCount" @click="nextPage">下一页</el-button>
+      <div class="capture-list-body">
+        <el-empty v-if="!total" description="该页暂无命中采集" :image-size="56" />
+        <el-scrollbar v-else class="capture-scroll">
+          <button
+            v-for="(ref, idx) in pageTurns"
+            :key="`${ref.session_id}-${ref.turn_id}`"
+            type="button"
+            class="capture-item"
+            :class="{ active: idx === activeIndex }"
+            @click="onItemClick(idx, ref)"
+          >
+            <span class="capture-item-label">{{ turnLabel(ref, (page - 1) * PAGE_SIZE + idx) }}</span>
+            <span class="capture-item-id" :title="captureId(ref)">{{ captureId(ref) }}</span>
+            <span class="capture-item-time">{{ formatAt(ref.at) }}</span>
+          </button>
+        </el-scrollbar>
       </div>
-      <div v-if="total > 1" class="step-nav">
-        <el-button size="small" :disabled="globalActiveIndex <= 0" @click="prevTurn">上一条</el-button>
-        <span class="pager-text">{{ globalActiveIndex + 1 }} / {{ total }}</span>
-        <el-button size="small" :disabled="globalActiveIndex >= total - 1" @click="nextTurn">下一条</el-button>
-      </div>
-      <div v-if="showCaptureActions && total" class="capture-actions">
-        <el-button size="small" type="warning" plain @click="onSplitCapture">拆成独立页</el-button>
-        <el-button size="small" plain @click="onPinCapture">钉到本页</el-button>
-        <el-button
-          size="small"
-          type="primary"
-          plain
-          :loading="morphLoading"
-          :disabled="globalActiveIndex < 1"
-          @click="onMorphVlm(false)"
-        >
-          VLM 多态判定
-        </el-button>
-        <el-button
-          size="small"
-          type="primary"
-          :loading="morphLoading"
-          :disabled="globalActiveIndex < 1"
-          @click="onMorphVlm(true)"
-        >
-          判定并应用
-        </el-button>
+      <div v-if="total" class="capture-list-footer">
+        <div v-if="pageCount > 1" class="pager">
+          <el-button size="small" :disabled="page <= 1" @click="prevPage">上一页</el-button>
+          <span class="pager-text">{{ page }} / {{ pageCount }}</span>
+          <el-button size="small" :disabled="page >= pageCount" @click="nextPage">下一页</el-button>
+        </div>
+        <div class="step-nav">
+          <el-button size="small" :disabled="globalActiveIndex <= 0" @click="prevTurn">上一条</el-button>
+          <span class="pager-text">{{ globalActiveIndex + 1 }} / {{ total }}</span>
+          <el-button size="small" :disabled="globalActiveIndex >= total - 1" @click="nextTurn">下一条</el-button>
+        </div>
+        <div v-if="showCaptureActions" class="capture-actions">
+          <el-button size="small" type="warning" plain @click="onSplitCapture">拆成独立页</el-button>
+          <el-button size="small" plain @click="onPinCapture">钉到本页</el-button>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :loading="morphLoading"
+            :disabled="globalActiveIndex < 1"
+            @click="onMorphVlm(false)"
+          >
+            VLM 多态判定
+          </el-button>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="morphLoading"
+            :disabled="globalActiveIndex < 1"
+            @click="onMorphVlm(true)"
+          >
+            判定并应用
+          </el-button>
+        </div>
       </div>
     </aside>
 
@@ -324,7 +328,6 @@ onUnmounted(() => {
       <NavFsmWireframe
         v-if="displayWireframe"
         :wireframe="displayWireframe"
-        :turn-label="title"
         :app-id="appId"
         :state-id="stateId"
         :layout-class="layoutClass"
@@ -340,17 +343,36 @@ onUnmounted(() => {
 <style scoped>
 .capture-preview-layout {
   display: grid;
-  grid-template-columns: minmax(200px, 240px) 1fr;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
-  min-height: 360px;
+  align-items: stretch;
+  min-height: min(72vh, 680px);
 }
 
 .capture-list-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(72vh, 680px);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   padding: 10px 10px 12px;
   background: var(--el-fill-color-blank);
+}
+
+.capture-list-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.capture-list-footer {
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .panel-head {
@@ -387,7 +409,8 @@ onUnmounted(() => {
 }
 
 .capture-scroll {
-  margin-bottom: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .capture-item {
@@ -439,9 +462,7 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  margin-top: 8px;
 }
 
 .pager,
@@ -462,8 +483,17 @@ onUnmounted(() => {
 
 .structure-panel {
   display: flex;
-  justify-content: center;
-  min-height: 360px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  min-height: min(68vh, 640px);
+  padding: 4px 8px 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-blank);
+  box-sizing: border-box;
 }
 
 .load-err {

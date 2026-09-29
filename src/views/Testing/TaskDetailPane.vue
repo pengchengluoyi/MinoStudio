@@ -10,6 +10,7 @@ import {
 } from '@/api/caseRunner'
 import { addMessageListener, removeMessageListener } from '@/api/mWebSocket'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
+import CaseExecutionRecord from '@/components/CaseExecutionRecord.vue'
 import { fetchTaskDetail, useLiveTaskRefresh } from '@/composables/useTestingTasks'
 import { getAppAutomationConfig } from '@/api/appAutomation'
 import { reviewKnowledgeItem } from '@/api/settings'
@@ -227,6 +228,14 @@ const caseEnvAlign = computed(() => {
   return t?.envAlign || null
 })
 const selectedCaseRunId = computed(() => (selectedCase.value ? caseRunIdOf(selectedCase.value) : ''))
+const focusedTurn = ref(null)
+const onSelectStep = (stepNo) => {
+  const n = Number(stepNo)
+  focusedTurn.value = Number.isFinite(n) && n > 0 ? n : null
+}
+watch(selectedCaseRunId, () => {
+  focusedTurn.value = null
+})
 const showTimeline = computed(() => {
   const s = selectedCase.value?.status
   return Boolean(selectedCaseRunId.value && s && !['pending', 'cancelled', 'skipped'].includes(s))
@@ -862,6 +871,13 @@ const saveReview = async () => {
           :env-label="task?.envProfile ? envLabel(task.envProfile) : ''"
           :env-align="caseEnvAlign"
           :platform="selectedCase?.platform || task?.platform || ''"
+          @select-step="onSelectStep"
+        />
+        <CaseExecutionRecord
+          v-if="selectedCaseRunId"
+          :session-id="selectedCaseRunId"
+          :turn="focusedTurn"
+          :live="showTimeline && isLive && selectedCase?.status === 'running'"
         />
       </div>
       <el-empty v-else-if="!loading" description="找不到该用例" />
@@ -1937,14 +1953,26 @@ const saveReview = async () => {
   min-width: 0;
   min-height: 0;
   width: 100%;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
+  gap: 10px;
   padding: 12px;
   border: 1px solid var(--mo-border, #e3e8f0);
   border-radius: 14px;
   background: var(--mo-soft, #f8fafc);
   overflow: hidden;
   box-sizing: border-box;
+}
+@media (max-width: 1180px) {
+  .timeline-pane {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .timeline-pane .tl,
+  .timeline-pane .cer {
+    min-height: 420px;
+    height: 420px;
+  }
 }
 .tl-toolbar {
   display: flex;
@@ -1965,7 +1993,7 @@ const saveReview = async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tl { flex: 1; min-height: 0; width: 100%; overflow: hidden; padding-top: 4px; }
+.tl { min-height: 0; height: 100%; width: 100%; overflow: hidden; padding-top: 4px; }
 </style>
 
 <style>

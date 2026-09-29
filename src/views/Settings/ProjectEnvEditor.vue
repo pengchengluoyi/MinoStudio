@@ -42,88 +42,90 @@
       </div>
 
       <div class="channel-head">
-        <span>应用与平台</span>
+        <span>应用配置</span>
+        <span class="field-meta">启动地址 / 登录凭证 / 手机号·Gmail 起始位（当前环境）</span>
         <el-button size="small" @click="openAddChannel">新增应用</el-button>
       </div>
-      <div class="field-list">
-        <div v-for="ch in channels" :key="ch.id" class="field-row">
-          <div class="field-label">
-            <span class="field-name">{{ channelTitle(ch) }}</span>
-            <span v-if="channelKindText(ch)" class="field-meta">{{ channelKindText(ch) }}</span>
-            <button type="button" class="var-chip" :title="'复制 ' + wrapVar(ch)" @click="copyKey(ch)">{{ wrapVar(ch) }}</button>
-          </div>
-          <div class="field-control">
-            <el-input
-              :model-value="channelVal(ch)"
-              :placeholder="ch.placeholder || channelTitle(ch)"
-              clearable
-              spellcheck="false"
-              @update:model-value="(v) => setChannelVal(ch, v)"
-            />
-            <p v-if="inheritHint(ch)" class="field-note">{{ inheritHint(ch) }}</p>
-          </div>
-          <el-button
-            link
-            type="danger"
-            size="small"
-            :disabled="channels.length <= 1"
-            @click="removeChannel(ch.id)"
-          >删除</el-button>
-        </div>
-      </div>
-
-      <div class="channel-head">
-        <span>Gmail 收信（可选兜底）</span>
-      </div>
-      <div class="field-list">
-        <div class="field-row">
-          <div class="field-label">
-            <span class="field-name">项目级收件地址</span>
-            <span class="field-meta">推荐在「设置 → 插件 → Gmail 收信」配置邮箱+密码（个人）</span>
-          </div>
-          <div class="field-control">
-            <el-input
-              v-model="gmailInboxAddress"
-              placeholder="仅当未配个人插件时作为兜底"
-              spellcheck="false"
-              clearable
-            />
-          </div>
-        </div>
-      </div>
-
-      <div class="channel-head">
-        <span>环境默认登录凭证</span>
-        <span class="field-meta">未单独配置的应用继承此项（当前环境：{{ activeLabel || activeTab }}）</span>
-      </div>
-      <SecretsBlock :secrets="envDefaultSecrets" @change="onEnvSecretsChange" />
-
-      <div class="channel-head">
-        <span>各应用登录凭证</span>
-        <span class="field-meta">可与环境默认不同；支持同一 App 在 test / pre 自由搭配</span>
-      </div>
-      <el-collapse class="app-secrets-collapse">
-        <el-collapse-item v-for="ch in channels" :key="'sec-' + ch.id" :name="ch.id">
-          <template #title>
-            <span class="collapse-title">{{ channelTitle(ch) }}</span>
-            <code class="var-chip mini">{{ ch.id }}</code>
-            <span v-if="!isChannelInherit(ch.id)" class="custom-tag">自定义</span>
-          </template>
-          <div class="inherit-row">
-            <el-checkbox
-              :model-value="isChannelInherit(ch.id)"
-              @change="(v) => setChannelInherit(ch.id, v)"
-            >
-              继承环境默认
-            </el-checkbox>
+      <div class="app-card-list">
+        <article v-for="ch in channels" :key="ch.id" class="app-card">
+          <header class="app-card-head">
+            <div>
+              <span class="field-name">{{ channelTitle(ch) }}</span>
+              <span v-if="channelKindText(ch)" class="field-meta">{{ channelKindText(ch) }}</span>
+              <code class="var-chip mini">{{ ch.id }}</code>
+            </div>
+            <div class="app-card-actions">
+              <button type="button" class="var-chip" :title="'复制 ' + wrapVar(ch)" @click="copyKey(ch)">{{ wrapVar(ch) }}</button>
+              <el-button
+                link
+                type="danger"
+                size="small"
+                :disabled="channels.length <= 1"
+                @click="removeChannel(ch.id)"
+              >删除</el-button>
+            </div>
+          </header>
+          <div class="field-row">
+            <div class="field-label"><span class="field-name">启动标识</span></div>
+            <div class="field-control">
+              <el-input
+                :model-value="channelVal(ch)"
+                :placeholder="ch.placeholder || channelTitle(ch)"
+                clearable
+                spellcheck="false"
+                @update:model-value="(v) => setChannelVal(ch, v)"
+              />
+              <p v-if="inheritHint(ch)" class="field-note">{{ inheritHint(ch) }}</p>
+            </div>
           </div>
           <SecretsBlock
             :secrets="channelSecretsView(ch.id)"
-            :disabled="isChannelInherit(ch.id)"
             @change="(patch) => onChannelSecretsChange(ch.id, patch)"
           />
-        </el-collapse-item>
-      </el-collapse>
+          <div v-if="showPhoneSeqFields(ch.id)" class="alias-block">
+            <div class="field-row">
+              <div class="field-label">
+                <span class="field-name">手机号起始位</span>
+                <span class="field-meta">纯数字，默认 17000000000；自动开号时每次 +1 写入号池</span>
+              </div>
+              <div class="field-control alias-control">
+                <el-input
+                  :model-value="phoneSeqStart(ch.id)"
+                  placeholder="17000000000"
+                  maxlength="16"
+                  spellcheck="false"
+                  @update:model-value="(v) => setPhoneSeqStart(ch.id, v)"
+                />
+                <span class="alias-next">
+                  下一号码：
+                  <strong>{{ phoneSeqNextLabel(ch.id) }}</strong>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div v-if="showGmailAliasFields(ch.id)" class="alias-block">
+            <div class="field-row">
+              <div class="field-label">
+                <span class="field-name">Gmail 别名起始位</span>
+                <span class="field-meta">纯数字，如 10000；租号时从该位 +N 写入号池</span>
+              </div>
+              <div class="field-control alias-control">
+                <el-input
+                  :model-value="gmailAliasStart(ch.id)"
+                  placeholder="10000"
+                  maxlength="16"
+                  spellcheck="false"
+                  @update:model-value="(v) => setGmailAliasStart(ch.id, v)"
+                />
+                <span class="alias-next">
+                  下一别名：
+                  <strong>{{ gmailAliasNextLabel(ch.id) }}</strong>
+                </span>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
 
     </section>
 
@@ -185,8 +187,13 @@ import {
   emptyProfile,
   normalizeEnvDoc,
   normalizeEnvSecrets,
-  normalizeGmailInbox,
   normalizeChannelSecrets,
+  normalizeChannelGmailAlias,
+  normalizeChannelPhoneSeq,
+  normalizeGmailAliasSlot,
+  normalizePhoneSeqSlot,
+  channelSecretsUseEmailGmail,
+  channelSecretsUsePhone,
   resolveChannelValue,
   slugEnvKey,
   appIdentifierFromAlias,
@@ -218,9 +225,12 @@ const draftKind = ref('web')
 const draftPlatform = ref('android')
 const draftAlias = ref('')
 const draftAppIdentifier = ref('')
-const gmailInboxAddress = ref('')
 /** channelId -> envKey -> secrets | null（null = 继承环境默认） */
 const channelSecrets = reactive({})
+/** channelId -> envKey -> { start, next } */
+const channelGmailAlias = reactive({})
+/** channelId -> envKey -> { start, next } */
+const channelPhoneSeq = reactive({})
 
 const sampleConfigVar = computed(() => {
   const preset = DEFAULT_CHANNELS.find((c) => c.id === (draftKind.value === 'app' ? draftPlatform.value : draftKind.value))
@@ -288,49 +298,121 @@ const inheritHint = (ch) => {
   return `未单独填写，与「${name}」相同`
 }
 
-const activeEnv = computed(() => environments.value.find((e) => e.key === activeTab.value) || null)
-const ensureSecrets = (env) => {
-  if (!env) return emptyEnvSecrets()
-  env.secrets = normalizeEnvSecrets(env.secrets)
-  return env.secrets
-}
-const envDefaultSecrets = computed(() => normalizeEnvSecrets(ensureSecrets(activeEnv.value)))
-
-const onEnvSecretsChange = (next) => {
-  if (!activeEnv.value) return
-  activeEnv.value.secrets = next
-  dirty.value = true
-}
-
 const channelRow = (chId) => {
   if (!channelSecrets[chId]) channelSecrets[chId] = {}
   return channelSecrets[chId]
 }
 
-const isChannelInherit = (chId) => {
-  const ek = activeTab.value
-  return channelRow(chId)[ek] == null
-}
-
 const channelSecretsView = (chId) => {
   const ek = activeTab.value
-  const row = channelRow(chId)[ek]
-  if (row == null) return envDefaultSecrets.value
-  return normalizeEnvSecrets(row)
+  return normalizeEnvSecrets(channelRow(chId)[ek])
 }
 
-const setChannelInherit = (chId, inherit) => {
-  const ek = activeTab.value
-  if (inherit) channelRow(chId)[ek] = null
-  else channelRow(chId)[ek] = emptyEnvSecrets()
-  dirty.value = true
+const effectiveChannelSecrets = (chId, envKey = activeTab.value) => (
+  normalizeEnvSecrets(channelRow(chId)[envKey])
+)
+
+const ensureGmailAliasSlot = (chId, envKey = activeTab.value) => {
+  if (!channelSecretsUseEmailGmail(effectiveChannelSecrets(chId, envKey))) return
+  const cur = normalizeGmailAliasSlot(aliasRow(chId)[envKey] || {})
+  if (!cur.start) {
+    aliasRow(chId)[envKey] = normalizeGmailAliasSlot({}, { applyEmailDefault: true })
+  }
+}
+
+const ensurePhoneSeqSlot = (chId, envKey = activeTab.value) => {
+  if (!channelSecretsUsePhone(effectiveChannelSecrets(chId, envKey))) return
+  const cur = normalizePhoneSeqSlot(phoneSeqRow(chId)[envKey] || {})
+  if (!cur.start) {
+    phoneSeqRow(chId)[envKey] = normalizePhoneSeqSlot({}, { applyPhoneDefault: true })
+  }
 }
 
 const onChannelSecretsChange = (chId, next) => {
   const ek = activeTab.value
-  if (isChannelInherit(chId)) return
   channelRow(chId)[ek] = next
+  ensureGmailAliasSlot(chId, ek)
+  ensurePhoneSeqSlot(chId, ek)
   dirty.value = true
+}
+
+const aliasRow = (chId) => {
+  if (!channelGmailAlias[chId]) channelGmailAlias[chId] = {}
+  return channelGmailAlias[chId]
+}
+
+const gmailAliasSlot = (chId) => {
+  const ek = activeTab.value
+  const applyDefault = showGmailAliasFields(chId)
+  return normalizeGmailAliasSlot(aliasRow(chId)[ek] || {}, { applyEmailDefault: applyDefault })
+}
+
+const gmailAliasStart = (chId) => gmailAliasSlot(chId).start
+
+const gmailAliasNextLabel = (chId) => {
+  const slot = gmailAliasSlot(chId)
+  if (!slot.start) return '—'
+  return slot.next || slot.start
+}
+
+const setGmailAliasStart = (chId, v) => {
+  const ek = activeTab.value
+  const digits = String(v || '').replace(/\D/g, '').slice(0, 16)
+  const prev = normalizeGmailAliasSlot(aliasRow(chId)[ek] || {})
+  let next = prev.next || prev.start || digits
+  if (digits && prev.start && prev.start !== digits) {
+    const n = parseInt(next, 10)
+    const d = parseInt(digits, 10)
+    if (!Number.isNaN(n) && !Number.isNaN(d)) next = String(Math.max(n, d))
+  } else if (!prev.next && digits) {
+    next = digits
+  }
+  aliasRow(chId)[ek] = normalizeGmailAliasSlot({ start: digits, next })
+  dirty.value = true
+}
+
+const phoneSeqRow = (chId) => {
+  if (!channelPhoneSeq[chId]) channelPhoneSeq[chId] = {}
+  return channelPhoneSeq[chId]
+}
+
+const phoneSeqSlot = (chId) => {
+  const ek = activeTab.value
+  const applyDefault = showPhoneSeqFields(chId)
+  return normalizePhoneSeqSlot(phoneSeqRow(chId)[ek] || {}, { applyPhoneDefault: applyDefault })
+}
+
+const phoneSeqStart = (chId) => phoneSeqSlot(chId).start
+
+const phoneSeqNextLabel = (chId) => {
+  const slot = phoneSeqSlot(chId)
+  if (!slot.start) return '—'
+  return slot.next || slot.start
+}
+
+const setPhoneSeqStart = (chId, v) => {
+  const ek = activeTab.value
+  const digits = String(v || '').replace(/\D/g, '').slice(0, 16)
+  const prev = normalizePhoneSeqSlot(phoneSeqRow(chId)[ek] || {})
+  let next = prev.next || prev.start || digits
+  if (digits && prev.start && prev.start !== digits) {
+    const n = parseInt(next, 10)
+    const d = parseInt(digits, 10)
+    if (!Number.isNaN(n) && !Number.isNaN(d)) next = String(Math.max(n, d))
+  } else if (!prev.next && digits) {
+    next = digits
+  }
+  phoneSeqRow(chId)[ek] = normalizePhoneSeqSlot({ start: digits, next })
+  dirty.value = true
+}
+
+const showPhoneSeqFields = (chId) => channelSecretsUsePhone(channelSecretsView(chId))
+
+const showGmailAliasFields = (chId) => {
+  const sec = channelSecretsView(chId)
+  const kind = sec?.login?.kind
+  const otpMode = sec?.otp?.mode
+  return kind === 'email' && (otpMode === 'gmail' || otpMode === 'auto')
 }
 
 const profileFilled = (key) => {
@@ -364,14 +446,26 @@ const applyDoc = (raw) => {
     }
   }
   activeTab.value = environments.value[0]?.key || ''
-  gmailInboxAddress.value = normalizeGmailInbox(doc.gmail_inbox).address
   Object.keys(channelSecrets).forEach((k) => delete channelSecrets[k])
   const cs = doc.channel_secrets || {}
+  const ga = doc.channel_gmail_alias || {}
+  const ps = doc.channel_phone_seq || {}
+  Object.keys(channelGmailAlias).forEach((k) => delete channelGmailAlias[k])
+  Object.keys(channelPhoneSeq).forEach((k) => delete channelPhoneSeq[k])
   for (const ch of channels.value) {
     channelSecrets[ch.id] = {}
+    channelGmailAlias[ch.id] = {}
+    channelPhoneSeq[ch.id] = {}
     for (const env of environments.value) {
       const slot = cs[ch.id]?.[env.key]
-      channelSecrets[ch.id][env.key] = slot ? normalizeEnvSecrets(slot) : null
+      if (slot) {
+        channelSecrets[ch.id][env.key] = normalizeEnvSecrets(slot)
+      } else {
+        const inherited = normalizeEnvSecrets(env.secrets)
+        channelSecrets[ch.id][env.key] = inherited
+      }
+      channelGmailAlias[ch.id][env.key] = normalizeGmailAliasSlot(ga[ch.id]?.[env.key])
+      channelPhoneSeq[ch.id][env.key] = normalizePhoneSeqSlot(ps[ch.id]?.[env.key])
     }
   }
   dirty.value = false
@@ -381,6 +475,36 @@ const applyDoc = (raw) => {
   })
 }
 
+const buildGmailAliasPayload = () => {
+  const keys = environments.value.map((e) => e.key)
+  const chIds = channels.value.map((c) => c.id)
+  const base = normalizeChannelGmailAlias(channelGmailAlias, chIds, keys)
+  for (const ch of channels.value) {
+    for (const env of environments.value) {
+      if (!channelSecretsUseEmailGmail(effectiveChannelSecrets(ch.id, env.key))) continue
+      if (!base[ch.id]) base[ch.id] = {}
+      const raw = base[ch.id][env.key] || aliasRow(ch.id)[env.key]
+      base[ch.id][env.key] = normalizeGmailAliasSlot(raw, { applyEmailDefault: true })
+    }
+  }
+  return base
+}
+
+const buildPhoneSeqPayload = () => {
+  const keys = environments.value.map((e) => e.key)
+  const chIds = channels.value.map((c) => c.id)
+  const base = normalizeChannelPhoneSeq(channelPhoneSeq, chIds, keys)
+  for (const ch of channels.value) {
+    for (const env of environments.value) {
+      if (!channelSecretsUsePhone(effectiveChannelSecrets(ch.id, env.key))) continue
+      if (!base[ch.id]) base[ch.id] = {}
+      const raw = base[ch.id][env.key] || phoneSeqRow(ch.id)[env.key]
+      base[ch.id][env.key] = normalizePhoneSeqSlot(raw, { applyPhoneDefault: true })
+    }
+  }
+  return base
+}
+
 const buildPayload = () => {
   const keys = environments.value.map((e) => e.key)
   return {
@@ -388,7 +512,7 @@ const buildPayload = () => {
     environments: environments.value.map((e) => ({
       key: e.key,
       label: e.label,
-      secrets: normalizeEnvSecrets(e.secrets),
+      secrets: emptyEnvSecrets(),
     })),
     channels: channels.value.map((c) => ({
       id: c.id,
@@ -409,12 +533,13 @@ const buildPayload = () => {
       }
       return [e.key, snap]
     })),
-    gmail_inbox: normalizeGmailInbox({ address: gmailInboxAddress.value }),
     channel_secrets: normalizeChannelSecrets(
       channelSecrets,
       channels.value.map((c) => c.id),
       keys,
     ),
+    channel_gmail_alias: buildGmailAliasPayload(),
+    channel_phone_seq: buildPhoneSeqPayload(),
   }
 }
 
@@ -476,7 +601,9 @@ const confirmAddEnv = () => {
   environments.value = [...environments.value, { key, label, secrets: emptyEnvSecrets() }]
   profiles[key] = emptyProfile(channels.value)
   for (const ch of channels.value) {
-    channelRow(ch.id)[key] = channelRow(ch.id)[activeTab.value] ?? null
+    channelRow(ch.id)[key] = normalizeEnvSecrets(channelRow(ch.id)[activeTab.value] ?? emptyEnvSecrets())
+    aliasRow(ch.id)[key] = normalizeGmailAliasSlot(aliasRow(ch.id)[activeTab.value])
+    phoneSeqRow(ch.id)[key] = normalizePhoneSeqSlot(phoneSeqRow(ch.id)[activeTab.value])
   }
   activeTab.value = key
   draftEnvLabel.value = ''
@@ -496,6 +623,12 @@ const removeEnv = async () => {
   delete profiles[key]
   for (const cid of Object.keys(channelSecrets)) {
     if (channelSecrets[cid]) delete channelSecrets[cid][key]
+  }
+  for (const cid of Object.keys(channelGmailAlias)) {
+    if (channelGmailAlias[cid]) delete channelGmailAlias[cid][key]
+  }
+  for (const cid of Object.keys(channelPhoneSeq)) {
+    if (channelPhoneSeq[cid]) delete channelPhoneSeq[cid][key]
   }
   const fallback = environments.value[Math.min(Math.max(idx, 0), environments.value.length - 1)]
   activeTab.value = fallback?.key || ''
@@ -543,7 +676,9 @@ const confirmAddChannel = () => {
   for (const env of environments.value) {
     ensureProfile(env.key)
     profiles[env.key][ch.id] = { [ch.field]: '' }
-    channelRow(ch.id)[env.key] = null
+    channelRow(ch.id)[env.key] = emptyEnvSecrets()
+    aliasRow(ch.id)[env.key] = normalizeGmailAliasSlot({})
+    phoneSeqRow(ch.id)[env.key] = normalizePhoneSeqSlot({})
   }
   addChannelOpen.value = false
   dirty.value = true
@@ -560,6 +695,8 @@ const removeChannel = async (id) => {
     if (profiles[env.key]) delete profiles[env.key][id]
   }
   delete channelSecrets[id]
+  delete channelGmailAlias[id]
+  delete channelPhoneSeq[id]
   dirty.value = true
 }
 
@@ -576,8 +713,9 @@ const copyKey = async (ch) => {
 watch(() => props.projectId, loadProject, { immediate: true })
 watch(profiles, () => { if (!hydrating) dirty.value = true }, { deep: true })
 watch(environments, () => { if (!hydrating) dirty.value = true }, { deep: true })
-watch(gmailInboxAddress, () => { if (!hydrating) dirty.value = true })
 watch(channelSecrets, () => { if (!hydrating) dirty.value = true }, { deep: true })
+watch(channelGmailAlias, () => { if (!hydrating) dirty.value = true }, { deep: true })
+watch(channelPhoneSeq, () => { if (!hydrating) dirty.value = true }, { deep: true })
 
 defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFilled })
 </script>
@@ -604,13 +742,49 @@ defineExpose({ save, saving, dirty, loadedProjectName, loadProject, profileFille
   background: #f3f4f6;
   border-right: 1px solid #e5e7eb;
 }
-.app-secrets-collapse {
-  margin: 0 12px 16px;
-  border: none;
+.app-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 12px 16px;
 }
-.collapse-title {
-  font-weight: 600;
-  margin-right: 8px;
+.app-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 14px 14px;
+}
+.app-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.app-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.alias-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #e5e7eb;
+}
+.alias-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.alias-next {
+  font-size: 12px;
+  color: #6b7280;
+}
+.alias-next strong {
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
 }
 .var-chip.mini {
   font-size: 10px;

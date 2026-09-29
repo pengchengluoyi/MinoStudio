@@ -49,6 +49,8 @@ const props = defineProps({
   platform: { type: String, default: '' },
 })
 
+const emit = defineEmits(['select-step'])
+
 const goal = ref('')
 const checkpoints = ref([])
 const steps = ref([])
@@ -387,27 +389,9 @@ function hydrateVerdict(d = {}) {
   if (!goal.value && props.caseGoal) goal.value = props.caseGoal
 }
 
-function fillMissingElapsed(caseElapsedMs) {
-  const known = steps.value.reduce((n, s) => n + (Number(s.elapsed) > 0 ? Number(s.elapsed) : 0), 0)
-  const zeros = steps.value.filter((s) => !(Number(s.elapsed) > 0))
-  if (!zeros.length) return
-  const budget = Math.max(0, (Number(caseElapsedMs) || 0) - known)
-  if (budget <= 0) return
-  // 优先把剩余时间给 assert / 最后一步；其余均分一小份
-  const assertLike = zeros.filter((s) => /assert|done|goal/i.test(String(s.cap || s.action?.capability_id || '')))
-  const targets = assertLike.length ? assertLike : [zeros[zeros.length - 1]]
-  const each = Math.max(1, Math.round(budget / targets.length))
-  targets.forEach((s) => { s.elapsed = each })
-  // 其它 0ms 步骤给最小可见值，避免水瀑完全看不见
-  zeros.forEach((s) => {
-    if (!(Number(s.elapsed) > 0)) s.elapsed = 1
-  })
-}
-
 async function backfill(runId) {
   if (!runId) return
   let usedAgent = false
-  let caseElapsed = 0
   // 仅按本条 report_run_id 拉轨迹；禁止回退到 batch run_id（会把同批其它 case 的胶片贴到当前用例）
   const ids = [runId]
   for (const id of ids) {
@@ -451,7 +435,6 @@ async function backfill(runId) {
     if (!finished.value) {
       finished.value = Boolean(d.agent_finished) || caseTerminal
     }
-    caseElapsed = Number(d.elapsed_ms || caseRow?.elapsed_ms) || 0
     const evs = d.event_results || (Array.isArray(d.events) ? d.events : [])
     if (!usedAgent) {
       const engine = extractEngineSteps(props.caseSpec || d)
@@ -487,7 +470,6 @@ async function backfill(runId) {
         if (k && !s.knowledge?.length) s.knowledge = k
       })
     }
-    fillMissingElapsed(caseElapsed)
     hydrateVerdict(d)
     if (!activeStep.value && steps.value.length) {
       const withThumb = [...steps.value].reverse().find((s) => isValidThumb(s.thumb))
@@ -496,7 +478,6 @@ async function backfill(runId) {
     if (props.live) scrollBottom()
     scrollFilmToActive()
   } catch (_) {
-    fillMissingElapsed(caseElapsed)
     hydrateVerdict({})
     if (!activeStep.value && steps.value.length) activeStep.value = steps.value[steps.value.length - 1].step
     if (props.live) scrollBottom()
@@ -833,6 +814,10 @@ watch(drawerThumbSrc, (src) => {
   }
   img.src = src
 }, { immediate: true })
+
+watch(activeStep, (stepNo) => {
+  if (stepNo) emit('select-step', stepNo)
+})
 
 const selectStep = (stepNo) => {
   activeStep.value = stepNo

@@ -201,6 +201,80 @@ export function normalizeGmailInbox(raw) {
   return { address: addr.slice(0, 120) }
 }
 
+/** 应用登录方式为邮箱时，别名起始位默认值（可被用户改 start；next 只递增不落退） */
+export const DEFAULT_GMAIL_ALIAS_START = '10000'
+
+export function defaultGmailAliasSlot() {
+  return { start: DEFAULT_GMAIL_ALIAS_START, next: DEFAULT_GMAIL_ALIAS_START }
+}
+
+export function normalizeGmailAliasSlot(raw, { applyEmailDefault = false } = {}) {
+  const digits = (s) => String(s || '').replace(/\D/g, '')
+  let start = digits(raw?.start).slice(0, 16)
+  let next = digits(raw?.next).slice(0, 16)
+  if (!start && applyEmailDefault) start = DEFAULT_GMAIL_ALIAS_START
+  if (!next && start) next = start
+  return { start, next }
+}
+
+export function channelSecretsUseEmailGmail(secrets) {
+  const sec = normalizeEnvSecrets(secrets)
+  const kind = sec?.login?.kind
+  const otpMode = sec?.otp?.mode
+  return kind === 'email' && (otpMode === 'gmail' || otpMode === 'auto')
+}
+
+/** 应用登录方式为手机号时，号池自动开号起始位（每次 +1） */
+export const DEFAULT_PHONE_SEQ_START = '17000000000'
+
+export function normalizePhoneSeqSlot(raw, { applyPhoneDefault = false } = {}) {
+  const digits = (s) => String(s || '').replace(/\D/g, '')
+  let start = digits(raw?.start).slice(0, 16)
+  let next = digits(raw?.next).slice(0, 16)
+  if (!start && applyPhoneDefault) start = DEFAULT_PHONE_SEQ_START
+  if (!next && start) next = start
+  return { start, next }
+}
+
+export function channelSecretsUsePhone(secrets) {
+  const sec = normalizeEnvSecrets(secrets)
+  return sec?.login?.kind === 'phone'
+}
+
+export function normalizeChannelPhoneSeq(raw, channelIds, envKeys) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  const chSet = new Set(channelIds || [])
+  const envSet = new Set(envKeys || [])
+  const out = {}
+  for (const [cid, perEnv] of Object.entries(src)) {
+    if (!chSet.has(cid) || !perEnv || typeof perEnv !== 'object') continue
+    const row = {}
+    for (const [ek, slot] of Object.entries(perEnv)) {
+      if (!envSet.has(ek)) continue
+      row[ek] = normalizePhoneSeqSlot(slot)
+    }
+    if (Object.keys(row).length) out[cid] = row
+  }
+  return out
+}
+
+export function normalizeChannelGmailAlias(raw, channelIds, envKeys) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  const chSet = new Set(channelIds || [])
+  const envSet = new Set(envKeys || [])
+  const out = {}
+  for (const [cid, perEnv] of Object.entries(src)) {
+    if (!chSet.has(cid) || !perEnv || typeof perEnv !== 'object') continue
+    const row = {}
+    for (const [ek, slot] of Object.entries(perEnv)) {
+      if (!envSet.has(ek)) continue
+      row[ek] = normalizeGmailAliasSlot(slot)
+    }
+    if (Object.keys(row).length) out[cid] = row
+  }
+  return out
+}
+
 export function normalizeChannelSecrets(raw, channelIds, envKeys) {
   const src = raw && typeof raw === 'object' ? raw : {}
   const chSet = new Set(channelIds || [])
@@ -317,8 +391,18 @@ export function normalizeEnvDoc(raw) {
     channels,
     pipeline,
     profiles,
-    gmail_inbox: normalizeGmailInbox(src.gmail_inbox),
+    gmail_inbox: { address: '' },
     channel_secrets: normalizeChannelSecrets(src.channel_secrets, channels.map((c) => c.id), envKeyList),
+    channel_gmail_alias: normalizeChannelGmailAlias(
+      src.channel_gmail_alias,
+      channels.map((c) => c.id),
+      envKeyList,
+    ),
+    channel_phone_seq: normalizeChannelPhoneSeq(
+      src.channel_phone_seq,
+      channels.map((c) => c.id),
+      envKeyList,
+    ),
   }
 }
 
