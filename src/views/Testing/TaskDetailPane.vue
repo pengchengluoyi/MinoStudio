@@ -584,6 +584,7 @@ const retryOne = async (c) => {
       case_ids: [c.case_id],
       async_exec: true,
       run_type: 'manual',
+      action_scheme: task.value?.action_scheme === 'dom' ? 'dom' : 'visual',
     })
     const nid = r?.data?.run_id || r?.data?.task_id
     if (nid) emit('open-task', nid)

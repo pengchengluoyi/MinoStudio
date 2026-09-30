@@ -242,6 +242,7 @@ const runForm = ref({
   platform: 'android',
   env_profile: 'test',
   env_surface: '',
+  action_scheme: 'visual',
   use_persisted_baseline: true,
   use_cache: true,
   async_exec: true,
@@ -1091,6 +1092,7 @@ const openNewRun = async (seed = null) => {
     const allowed = runSeed.value.sns.filter((sn) => devices.value.some((d) => d.sn === sn))
     if (allowed.length) runForm.value.sns = allowed
   }
+  runForm.value.action_scheme = 'visual'
 }
 
 const selectAllVisibleCases = () => {
@@ -1148,6 +1150,7 @@ const submitRun = async () => {
       release_id: runSeed.value?.releaseId || '',
       env_profile: runForm.value.env_profile || runEnvDefault.value || 'test',
       env_surface: runForm.value.env_surface || undefined,
+      action_scheme: runForm.value.action_scheme === 'dom' ? 'dom' : 'visual',
     })
     const batch = res?.data?.run_id || res?.data?.task_id
     if (!batch) { ElMessage.error('启动失败：未拿到 run_id'); return }
@@ -1771,6 +1774,39 @@ watch(selectedCaseIds, () => {
             <template v-if="unitCount && runForm.sns.length">将执行 {{ unitCount }} 次 · 占用 {{ runForm.sns.length }} 台直到任务结束</template>
             <template v-else-if="unitCount">将执行 {{ unitCount }} 次 · 设备由开跑后申请</template>
             <template v-else>勾选用例后显示执行次数 · {{ runForm.sns.length ? `已选 ${runForm.sns.length} 台` : '可不选设备' }}</template>
+          </div>
+        </div>
+        <div class="field">
+          <label>执行方案</label>
+          <div class="run-target-cards" role="list">
+            <button
+              type="button"
+              role="listitem"
+              class="run-target-card"
+              :class="{ on: runForm.action_scheme !== 'dom' }"
+              @click="runForm.action_scheme = 'visual'"
+            >
+              <div class="run-target-card-head">
+                <strong>看图</strong>
+                <code class="run-target-key">visual</code>
+              </div>
+              <span class="run-target-meta">纯视觉</span>
+              <span class="run-target-val">只按模型坐标点、输入、滑动</span>
+            </button>
+            <button
+              type="button"
+              role="listitem"
+              class="run-target-card"
+              :class="{ on: runForm.action_scheme === 'dom' }"
+              @click="runForm.action_scheme = 'dom'"
+            >
+              <div class="run-target-card-head">
+                <strong>DOM</strong>
+                <code class="run-target-key">dom</code>
+              </div>
+              <span class="run-target-meta">纯层级</span>
+              <span class="run-target-val">只按节点点，点不上不改走看图</span>
+            </button>
           </div>
         </div>
         <div class="field">
