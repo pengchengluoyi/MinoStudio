@@ -13,7 +13,8 @@ export function isLocalNode(node, localScoutId) {
 }
 
 export function nodeOnline(node) {
-  return node?.status === 'online' || node?.online === true || node?.alive === true
+  if (node?.status === 'offline') return false
+  return node?.status === 'online' || node?.status === 'asleep' || node?.online === true || node?.alive === true
 }
 
 export function ownershipLabel(node, { studioId = '', userId = '' } = {}) {
@@ -72,22 +73,24 @@ export function nodeActionState(
       },
     }
   }
+  const asleep = online && (node?.status === 'asleep' || node?.host?.mode === 'asleep')
   return {
     local: false,
     via: 'remote',
+    asleep,
     start: {
-      visible: false,
-      enabled: false,
-      reason: '离线专机无法远程启动',
+      visible: asleep,
+      enabled: asleep,
+      reason: asleep ? '' : '离线专机无法远程启动',
     },
     stop: {
-      visible: online,
-      enabled: online,
+      visible: online && !asleep,
+      enabled: online && !asleep,
       reason: online ? '' : '节点离线，无法下发',
     },
     restart: {
-      visible: online,
-      enabled: online,
+      visible: online && !asleep,
+      enabled: online && !asleep,
       reason: online ? '' : '节点离线，无法下发',
     },
     update: {

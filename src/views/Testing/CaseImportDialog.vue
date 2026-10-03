@@ -227,6 +227,20 @@ const isSkipped = (idx) => skipRows.value.has(idx) || idx === headerRow.value
 
 const flagText = (flags = []) => flags.map((f) => FLAG_LABELS[f] || f).join(' · ')
 
+const remarkText = (row = {}) => {
+  const remark = String(row.remark || '').trim()
+  if (remark) return remark
+  const flags = (row.flags || []).filter((f) => f !== 'ui_not_coverable')
+  return flagText(flags)
+}
+
+const parsedLines = (row, key, fallback) => {
+  const lines = Array.isArray(row?.[key]) ? row[key].filter(Boolean) : []
+  if (lines.length) return lines
+  const raw = String(fallback || '').trim()
+  return raw ? [raw] : []
+}
+
 const runPreview = async () => {
   if (!props.projectId) {
     ElMessage.warning('缺少项目 ID')
@@ -468,7 +482,7 @@ const submit = async () => {
               :key="i"
               :class="{
                 'is-conflict': row.conflict,
-                'is-warn': (row.flags || []).length && !row.conflict,
+                'is-warn': ((row.flags || []).length || row.remark) && !row.conflict,
               }"
             >
               <td><el-checkbox v-model="row.selected" /></td>
@@ -481,10 +495,28 @@ const submit = async () => {
                 <pre class="cell-pre">{{ row.precondition_preview }}</pre>
                 <span v-if="row.resource_claim_summary" class="claim-sum">{{ row.resource_claim_summary }}</span>
               </td>
-              <td><pre class="cell-pre">{{ row.steps_preview }}</pre></td>
-              <td><pre class="cell-pre">{{ row.expected_preview }}</pre></td>
+              <td>
+                <ul v-if="parsedLines(row, 'steps_parsed', row.steps_preview).length" class="parse-list">
+                  <li
+                    v-for="(line, li) in parsedLines(row, 'steps_parsed', row.steps_preview)"
+                    :key="li"
+                    :class="{ miss: String(line).includes('×') }"
+                  >{{ line }}</li>
+                </ul>
+                <span v-else class="muted">—</span>
+              </td>
+              <td>
+                <ul v-if="parsedLines(row, 'expected_parsed', row.expected_preview).length" class="parse-list">
+                  <li
+                    v-for="(line, li) in parsedLines(row, 'expected_parsed', row.expected_preview)"
+                    :key="li"
+                    :class="{ miss: String(line).includes('×') }"
+                  >{{ line }}</li>
+                </ul>
+                <span v-else class="muted">—</span>
+              </td>
               <td class="flag-cell">
-                <span v-if="(row.flags || []).length" class="flag-tag">{{ flagText(row.flags) }}</span>
+                <span v-if="remarkText(row)" class="flag-tag">{{ remarkText(row) }}</span>
                 <span v-else class="muted">—</span>
               </td>
               <template v-if="conflictCount">
@@ -607,7 +639,7 @@ const submit = async () => {
   border: 1px solid #e5e7ef;
   padding: 4px 6px;
   vertical-align: top;
-  max-width: 160px;
+  max-width: 220px;
   word-break: break-word;
 }
 .raw-table th {
@@ -639,6 +671,17 @@ const submit = async () => {
   font-size: 12px;
   max-height: 72px;
   overflow: hidden;
+}
+.parse-list {
+  margin: 0;
+  padding-left: 1.1em;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 120px;
+  overflow: auto;
+}
+.parse-list li.miss {
+  color: #b45309;
 }
 .claim-sum {
   display: block;

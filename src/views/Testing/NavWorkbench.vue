@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue'
 import NavFsmPanel from '@/views/Testing/NavFsmPanel.vue'
-import NavFsmTest from '@/views/Testing/NavFsmTest.vue'
 import NavFlowBlocksPanel from '@/views/Testing/NavFlowBlocksPanel.vue'
 import '@/views/Settings/settings-ui.css'
 
@@ -15,15 +14,12 @@ const props = defineProps({
 
 const SECTIONS = {
   arch: { title: '架构', desc: '' },
-  test: { title: '测试', desc: '' },
   'flow-blocks': { title: '逻辑块', desc: '通用登录/系统弹窗与按应用覆盖' },
 }
 
-const panelSection = computed(() => {
-  if (props.section === 'test') return 'test'
-  if (props.section === 'flow-blocks') return 'flow-blocks'
-  return 'arch'
-})
+const panelSection = computed(() => (
+  props.section === 'flow-blocks' ? 'flow-blocks' : 'arch'
+))
 
 const meta = computed(() => SECTIONS[panelSection.value] || SECTIONS.arch)
 </script>
@@ -37,13 +33,8 @@ const meta = computed(() => SECTIONS[panelSection.value] || SECTIONS.arch)
       </div>
     </header>
 
-    <NavFsmTest
-      v-if="panelSection === 'test'"
-      :app-id="appId"
-      :project-id="projectId"
-    />
     <NavFlowBlocksPanel
-      v-else-if="panelSection === 'flow-blocks'"
+      v-if="panelSection === 'flow-blocks'"
       :app-id="appId"
       :app-name="appName"
     />

@@ -92,6 +92,9 @@ const handleLogout = async () => {
     <div class="work-sidebar-col">
       <div class="work-aside-chrome">
         <div v-if="showMacTraffic" class="work-mac-traffic" aria-hidden="true" />
+        <div v-if="$slots.workspace" class="work-chrome-leading">
+          <slot name="workspace" />
+        </div>
         <div class="work-chrome-drag" />
         <div class="work-chrome-cluster">
           <button

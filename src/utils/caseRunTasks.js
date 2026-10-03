@@ -526,7 +526,7 @@ function assignEngineSteps(groups, engineSteps) {
 
   for (const step of engineSteps || []) {
     const no = Number(step?.step)
-    if (!Number.isFinite(no) || no <= 0) continue
+    if (!Number.isFinite(no) || no < 0) continue
     const kind = engineKind(step)
     const cap = capOf(step)
     const tagged = laneOf(step)
@@ -707,7 +707,7 @@ export function groupsFromSlots(slots) {
         title: String(item?.title || col.label),
         stepNum: Number(item?.step_num || 0),
       })
-      task.cardNos = stepIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+      task.cardNos = stepIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n >= 0)
       task.status = slotTaskStatus(item?.status)
       return task
     })

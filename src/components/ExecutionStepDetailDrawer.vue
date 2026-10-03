@@ -5,23 +5,55 @@ import { getPack } from '@/api/packs'
 import { formatElapsed, capabilityLabel, formatCapabilityAction, channelLabel } from '@/utils/testingTasks'
 import { checkpointLabel, resolveCheckpointHits } from '@/utils/checkpoints'
 import PayloadView from '@/components/PayloadView.vue'
+import CaseExecutionRecord from '@/components/CaseExecutionRecord.vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
+  mode: { type: String, default: 'drawer' },
   step: { type: Object, default: null },
+  steps: { type: Array, default: () => [] },
   focusUid: { type: String, default: '' },
   hasShot: { type: Boolean, default: false },
   checkpointCatalog: { type: Array, default: () => [] },
+  sessionId: { type: String, default: '' },
+  live: { type: Boolean, default: false },
+  failCompare: { type: Object, default: null },
 })
 
-const emit = defineEmits(['update:modelValue', 'focus'])
+const emit = defineEmits(['update:modelValue', 'focus', 'pick-step'])
+
+const isPanel = computed(() => props.mode === 'panel')
+const panelTab = ref('one')
+
+const showFailCompare = computed(() => {
+  const fc = props.failCompare
+  const no = Number(step.value?.step)
+  const failNo = Number(fc?.step)
+  if (!fc || !Number.isFinite(no) || no !== failNo) return null
+  return fc
+})
+
+const recordTurn = computed(() => {
+  const n = Number(step.value?.step)
+  return Number.isFinite(n) && n > 0 ? n : null
+})
+const rawOpen = ref(false)
+const longTextOpen = ref(false)
 
 const router = useRouter()
 
 const visible = computed({
-  get: () => props.modelValue,
+  get: () => (isPanel.value ? true : props.modelValue),
   set: (v) => emit('update:modelValue', v),
 })
+
+const stepIndex = computed(() => {
+  const no = Number(step.value?.step)
+  if (!Number.isFinite(no)) return 0
+  const idx = (props.steps || []).findIndex((s) => Number(s.step) === no)
+  return idx >= 0 ? idx + 1 : 0
+})
+const stepTotal = computed(() => (props.steps || []).length)
 
 const step = computed(() => props.step || {})
 const packMap = ref({})
@@ -137,6 +169,12 @@ const stepTitle = computed(() => {
 
 const kv = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`)
 
+watch(() => step.value?.step, () => {
+  longTextOpen.value = false
+  rawOpen.value = false
+  panelTab.value = 'one'
+})
+
 watch(
   () => [props.modelValue, packs.value.map((p) => packUidOf(p)).filter(Boolean).join('|')].join(':'),
   async () => {
@@ -159,6 +197,7 @@ watch(
 
 <template>
   <el-drawer
+    v-if="!isPanel"
     v-model="visible"
     direction="rtl"
     size="35%"
@@ -384,6 +423,96 @@ watch(
       </div>
     </div>
   </el-drawer>
+
+  <div v-else class="sd-panel-shell">
+    <div class="sd-panel-tabs">
+      <button type="button" :class="{ active: panelTab === 'one' }" @click="panelTab = 'one'">摘要</button>
+      <button type="button" :class="{ active: panelTab === 'all' }" @click="panelTab = 'all'">步骤</button>
+      <button
+        v-if="sessionId"
+        type="button"
+        :class="{ active: panelTab === 'trace' }"
+        @click="panelTab = 'trace'"
+      >轨迹</button>
+      <span v-if="stepTotal" class="sd-step-counter">{{ stepIndex || '—' }} / {{ stepTotal }}</span>
+    </div>
+    <div v-if="panelTab === 'all'" class="sd-all-steps">
+      <button
+        v-for="s in steps"
+        :key="s.step"
+        type="button"
+        class="sd-all-step"
+        :class="{ on: s.step === step.step }"
+        @click="emit('pick-step', s.step)"
+      >
+        <strong>#{{ s.step }}</strong>
+        <span>{{ capabilityLabel(s.cap) || s.cap || '—' }}</span>
+      </button>
+    </div>
+    <div v-else-if="panelTab === 'trace' && sessionId" class="sd-trace-wrap">
+      <CaseExecutionRecord
+        embedded
+        :session-id="sessionId"
+        :turn="recordTurn"
+        :live="live"
+      />
+    </div>
+    <div v-else-if="step.step" class="sd sd-embedded">
+      <header class="sd-head sd-head-compact">
+        <p class="sd-kicker">第 {{ step.step }} 步</p>
+        <div class="sd-title-row">
+          <h3 class="sd-title">{{ stepTitle }}</h3>
+          <span v-if="step.status" class="sd-badge" :class="statusTone(step.status)">{{ statusText(step.status) }}</span>
+        </div>
+        <div class="sd-meta">
+          <span v-if="channelLabel(step.executor)">{{ channelLabel(step.executor) }}</span>
+          <span v-if="fmtMs(step.elapsed)">{{ fmtMs(step.elapsed) }}</span>
+        </div>
+      </header>
+      <div class="sd-body">
+        <section v-if="showFailCompare" class="sd-card sd-compare-card">
+          <h4>预期 / 实际</h4>
+          <div class="sd-compare-row">
+            <div class="sd-compare-box">
+              <em>预期</em>
+              <p>{{ showFailCompare.expected }}</p>
+            </div>
+            <div class="sd-compare-box">
+              <em>实际</em>
+              <p>{{ showFailCompare.actual }}</p>
+            </div>
+          </div>
+        </section>
+        <section class="sd-card">
+          <h4>本步摘要</h4>
+          <div v-if="actionLine" class="sd-field">
+            <span class="sd-label">动作</span>
+            <span>{{ actionLine }}</span>
+          </div>
+          <div v-if="step.summary" class="sd-field">
+            <span class="sd-label">判定</span>
+            <p v-if="!longTextOpen" class="sd-clamp">{{ step.summary }}</p>
+            <p v-else>{{ step.summary }}</p>
+            <button v-if="String(step.summary || '').length > 120" type="button" class="sd-fold-btn" @click="longTextOpen = !longTextOpen">
+              {{ longTextOpen ? '收起' : '展开全文' }}
+            </button>
+          </div>
+          <p v-if="!actionLine && !step.summary" class="sd-empty">无</p>
+        </section>
+        <section v-if="hasLlmInput || hasLlmOutput || hasLlmMeta" class="sd-card">
+          <button type="button" class="sd-fold-btn block" @click="rawOpen = !rawOpen">
+            原始事件 {{ rawOpen ? '收起' : '展开' }}
+          </button>
+          <template v-if="rawOpen">
+            <PayloadView v-if="hasLlmInput" title="模型输入" :value="step.llm_input" />
+            <PayloadView v-if="hasLlmOutput" title="模型输出" :value="step.llm_output" />
+            <PayloadView v-if="hasLlmMeta" title="元数据" :value="step.llm_meta" />
+          </template>
+        </section>
+      </div>
+    </div>
+    <p v-else class="sd-empty sd-empty-panel">选择时间线上的某一步查看详情</p>
+  </div>
 </template>
 
 <style scoped>
@@ -454,6 +583,113 @@ watch(
 }
 .sd-dispatch-link:hover {
   background: #e0e7ff;
+}
+
+.sd-embedded {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.sd-embedded .sd-body {
+  flex: 1;
+  min-height: 0;
+}
+.sd-head-compact {
+  padding: 12px 14px 10px;
+}
+.sd-head-compact .sd-title {
+  font-size: 15px;
+  font-family: inherit;
+}
+.sd-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sd-fold-btn {
+  border: none;
+  background: transparent;
+  color: var(--mo-primary, #4f46e5);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.sd-fold-btn.block {
+  width: 100%;
+  text-align: left;
+}
+.sd-trace-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.sd-compare-card .sd-compare-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.sd-compare-box {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  min-width: 0;
+}
+.sd-compare-box em {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  font-style: normal;
+  margin-bottom: 6px;
+}
+.sd-compare-box p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #111827;
+  word-break: break-word;
+}
+.sd-all-steps {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 2px 8px;
+}
+.sd-all-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.sd-all-step:hover,
+.sd-all-step.on {
+  background: #f1f5f9;
+}
+.sd-all-step strong {
+  font-family: ui-monospace, monospace;
+  color: #64748b;
+}
+.sd-empty-panel {
+  padding: 24px 12px;
+  text-align: center;
 }
 
 .sd-body {

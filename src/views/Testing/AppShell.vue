@@ -70,6 +70,41 @@ import { groupCasesByModuleTree, parseCaseIdQuery } from '@/utils/caseLibrary'
 import { casesFromProjectRows, generatedCasesFromProcess, mergeRunCases } from '@/utils/qaProcess'
 import { slicePage, TABLE_PAGE_SIZES } from '@/utils/tablePage'
 import '@/views/Settings/settings-ui.css'
+import {
+  CollectionTag,
+  List,
+  Reading,
+  Guide,
+  Sunny,
+  Document,
+  Grid,
+  Box,
+  Setting,
+} from '@element-plus/icons-vue'
+
+const TESTING_NAV_ICONS = {
+  process: CollectionTag,
+  tasks: List,
+  cases: Reading,
+  navigation: Guide,
+  knowledge: Sunny,
+  docs: Document,
+  intel: Grid,
+  assets: Box,
+  config: Setting,
+}
+const TESTING_NAV_ACCENT = {
+  process: { bg: '#eff6ff', fg: '#2563eb' },
+  tasks: { bg: '#eef2ff', fg: '#4f46e5' },
+  cases: { bg: '#ecfdf5', fg: '#059669' },
+  navigation: { bg: '#e0f2fe', fg: '#0284c7' },
+  knowledge: { bg: '#fffbeb', fg: '#d97706' },
+  docs: { bg: '#ccfbf1', fg: '#0d9488' },
+  intel: { bg: '#f0fdfa', fg: '#0f766e' },
+  assets: { bg: '#f5f3ff', fg: '#7c3aed' },
+  config: { bg: '#f1f5f9', fg: '#475569' },
+}
+const navAccent = (item) => TESTING_NAV_ACCENT[item.id] || { bg: '#f1f5f9', fg: '#64748b' }
 
 const route = useRoute()
 const router = useRouter()
@@ -83,7 +118,7 @@ const TESTING_NAV = [
   {
     id: 'process',
     label: '单据',
-    icon: '📌',
+    icon: '',
     color: '#3b82f6',
     children: [
       { id: 'req', label: '需求测试' },
@@ -94,7 +129,7 @@ const TESTING_NAV = [
   {
     id: 'tasks',
     label: '任务',
-    icon: '📋',
+    icon: '',
     color: '#6366f1',
     children: [
       { id: 'runs', label: '执行批次' },
@@ -105,29 +140,26 @@ const TESTING_NAV = [
   {
     id: 'cases',
     label: '用例',
-    icon: '📖',
+    icon: '',
     color: '#22c55e',
     children: [
-      { id: 'atlas', label: '应用图谱' },
-      { id: 'mindmap', label: '脑图' },
       { id: 'library', label: '用例库' },
     ],
   },
   {
     id: 'navigation',
     label: '导航',
-    icon: '🧭',
+    icon: '',
     color: '#0ea5e9',
     children: [
       { id: 'arch', label: '架构' },
       { id: 'flow-blocks', label: '逻辑块' },
-      { id: 'test', label: '测试' },
     ],
   },
   {
     id: 'knowledge',
     label: '知识',
-    icon: '💡',
+    icon: '',
     color: '#f59e0b',
     children: [
       { id: 'pending', label: '待审核' },
@@ -137,19 +169,19 @@ const TESTING_NAV = [
   {
     id: 'docs',
     label: '文档',
-    icon: '📄',
+    icon: '',
     color: '#14b8a6',
   },
   {
     id: 'intel',
     label: '信息基座',
-    icon: '🧩',
+    icon: '',
     color: '#0d9488',
   },
   {
     id: 'assets',
     label: '测试资源',
-    icon: '🪪',
+    icon: '',
     color: '#8b5cf6',
     children: [
       { id: 'accounts', label: '账号管理' },
@@ -160,7 +192,7 @@ const TESTING_NAV = [
   {
     id: 'config',
     label: '配置',
-    icon: '⚙️',
+    icon: '',
     color: '#64748b',
     children: [
       { id: 'env', label: '环境配置', color: '#3b82f6' },
@@ -259,12 +291,7 @@ const hasDetail = computed(() => isTaskRouteName(route.name) && !!selectedTaskId
 const dispatchCallId = computed(() => String(route.query.call || ''))
 const activeSub = computed(() => {
   if (tab.value === 'process') return processBoard.value
-  if (tab.value === 'cases') {
-    const raw = String(route.query.view || 'atlas')
-    if (raw === 'features' || raw === 'changes') return 'atlas'
-    if (raw === 'reqs') return 'mindmap'
-    return raw
-  }
+  if (tab.value === 'cases') return 'library'
   if (tab.value === 'navigation') return String(route.query.nview || 'arch')
   if (tab.value === 'assets') return String(route.query.section || 'accounts')
   if (tab.value === 'dispatch') return String(route.query.dview || 'pipeline')
@@ -423,6 +450,14 @@ const taskListPill = computed(() => {
 })
 const taskEmptyText = computed(() => (tasks.value.length ? '没有符合筛选的任务' : '暂无任务'))
 const formatTaskTime = (row) => (row?.startedAt || '').replace('T', ' ').slice(5, 16) || '—'
+const taskStatusPillClass = (row) => {
+  const s = String(row?.status || '')
+  if (['done', 'pass'].includes(s)) return 'is-pass'
+  if (['fail', 'failed', 'partial'].includes(s)) return 'is-fail'
+  if (s === 'cancelled') return 'is-cancel'
+  if (['running', 'queued'].includes(s)) return 'is-warn'
+  return 'is-muted'
+}
 
 const filteredCases = computed(() => {
   const rid = runSeed.value?.requirementId
@@ -631,8 +666,7 @@ const setTab = async (next) => {
     loadDevices()
   }
   if (resolved === 'cases') {
-    const rawView = String(route.query.view || 'atlas')
-    q.view = (rawView === 'sync' || rawView === 'feishu') ? 'library' : rawView
+    q.view = 'library'
   }
   if (resolved === 'navigation') q.nview = String(route.query.nview || 'arch')
   if (resolved === 'assets') q.section = String(route.query.section || 'accounts')
@@ -968,6 +1002,7 @@ const consumeOpenRun = async () => {
     if (allowed.length) runForm.value.sns = allowed
   }
   ensureRunEnvSelection()
+  ensureRunDeviceSelection()
   replaceQuery({
     ...baseQuery(),
     tab: 'tasks',
@@ -989,7 +1024,7 @@ const ensureRunEnvSelection = () => {
   let cur = String(runForm.value.env_profile || '').trim()
   if (seed && keys.includes(seed)) cur = seed
   if (!cur || (keys.length && !keys.includes(cur))) {
-    cur = keys.includes(runEnvDefault.value) ? runEnvDefault.value : (keys[0] || runEnvDefault.value || 'test')
+    cur = keys[0] || runEnvDefault.value || 'test'
   }
   runForm.value.env_profile = cur || 'test'
   ensureRunSurfaceSelection()
@@ -1037,6 +1072,38 @@ const pruneRunDeviceSelection = () => {
     const d = devices.value.find((x) => x.sn === sn)
     return d && deviceMatchesRunTarget(d)
   })
+  if (!runForm.value.sns.length) ensureRunDeviceSelection()
+}
+
+const selectRunEnvProfile = (key) => {
+  const k = String(key || '').trim()
+  if (!k) return
+  runForm.value.env_profile = k
+}
+
+const isRunDeviceSelected = (sn) => (runForm.value.sns || []).includes(sn)
+
+const toggleRunDevice = (device) => {
+  if (!device?.sn || deviceOptionDisabled(device)) return
+  const sns = [...(runForm.value.sns || [])]
+  const i = sns.indexOf(device.sn)
+  if (i >= 0) sns.splice(i, 1)
+  else sns.push(device.sn)
+  runForm.value.sns = sns
+}
+
+const clearRunDevices = () => {
+  runForm.value.sns = []
+}
+
+const ensureRunDeviceSelection = () => {
+  const list = runFilteredDevices.value.filter((d) => !deviceOptionDisabled(d))
+  const cur = (runForm.value.sns || []).filter((sn) => list.some((d) => d.sn === sn))
+  if (cur.length) {
+    runForm.value.sns = cur
+    return
+  }
+  runForm.value.sns = list[0] ? [list[0].sn] : []
 }
 
 const loadRunEnvironments = async () => {
@@ -1092,6 +1159,7 @@ const openNewRun = async (seed = null) => {
     const allowed = runSeed.value.sns.filter((sn) => devices.value.some((d) => d.sn === sn))
     if (allowed.length) runForm.value.sns = allowed
   }
+  ensureRunDeviceSelection()
   runForm.value.action_scheme = 'visual'
 }
 
@@ -1293,11 +1361,11 @@ watch(selectedCaseIds, () => {
 
 <template>
   <WorkShell mode="testing" :create-title="createTitle" :show-create="canCreate" @search="onShellSearch" @create="onShellCreate">
-    <template #sidebar>
-      <el-dropdown trigger="click" @command="onWorkspaceCommand">
-        <button type="button" class="nav-workspace">
+    <template #workspace>
+      <el-dropdown trigger="click" class="work-chrome-workspace-dd" @command="onWorkspaceCommand">
+        <button type="button" class="nav-workspace nav-workspace--chrome">
           <span class="nav-workspace-avatar">{{ workspaceInitial }}</span>
-          <div>
+          <div class="nav-workspace-text">
             <strong>{{ workspaceLabel }}</strong>
             <small>工作台</small>
           </div>
@@ -1319,7 +1387,9 @@ watch(selectedCaseIds, () => {
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+    </template>
 
+    <template #sidebar>
       <nav class="side-actions" aria-label="项目导航">
         <template v-for="item in TESTING_NAV" :key="item.id">
           <div :class="{ 'nav-config-block': item.id === 'config' }">
@@ -1329,7 +1399,13 @@ watch(selectedCaseIds, () => {
               :class="{ on: navItemOn(item) }"
               @click="toggleNavItem(item)"
             >
-              <span class="nav-dot" :style="{ background: item.color || '#64748b' }">{{ item.icon || item.label.slice(0, 1) }}</span>
+              <span
+                class="nav-icon-wrap"
+                aria-hidden="true"
+                :style="{ background: navAccent(item).bg, color: navAccent(item).fg }"
+              >
+                <el-icon><component :is="TESTING_NAV_ICONS[item.id] || List" /></el-icon>
+              </span>
               {{ item.label }}
               <i
                 v-if="item.children?.length"
@@ -1357,117 +1433,81 @@ watch(selectedCaseIds, () => {
     <div class="testing-workspace">
       <div
         v-if="tab === 'tasks' && !hasDetail"
-        class="ws-config fill"
+        class="ws-config fill runs-page-shell"
         v-loading="loading"
       >
-        <div class="settings-panel task-list-page">
-          <header class="settings-page-header">
+        <div class="settings-panel task-list-page task-runs-page">
+          <header class="run-list-head">
             <div>
               <h2 class="settings-page-title">执行批次</h2>
+              <p class="run-list-sub">{{ taskListPill }}</p>
             </div>
-            <div
-              class="settings-summary-pill"
-              :style="runningTaskCount ? { background: '#ecfdf5', color: '#047857' } : undefined"
-            >{{ taskListPill }}</div>
+            <div class="run-list-toolbar">
+              <el-select v-model="taskFilter" size="small" class="filter-item" teleported>
+                <el-option label="全部状态" value="all" />
+                <el-option label="进行中" value="running" />
+                <el-option label="部分失败" value="partial_fail" />
+                <el-option label="失败" value="failed" />
+                <el-option label="还没测完" value="unobserved" />
+                <el-option label="已取消" value="cancelled" />
+                <el-option label="已通过" value="done" />
+              </el-select>
+              <el-select v-model="taskDeviceFilter" size="small" clearable placeholder="设备" class="filter-item" teleported>
+                <el-option
+                  v-for="sn in taskDeviceOptions"
+                  :key="sn"
+                  :label="shortDeviceLabel(sn)"
+                  :value="sn"
+                />
+              </el-select>
+              <el-select v-model="taskWhen" size="small" class="filter-item" teleported>
+                <el-option label="全部时间" value="all" />
+                <el-option label="今天" value="today" />
+                <el-option label="近 7 天" value="week" />
+              </el-select>
+              <el-button size="small" text :loading="loading" @click="loadTasks">刷新</el-button>
+              <el-button size="small" type="primary" @click="openNewRun">新建执行</el-button>
+            </div>
           </header>
-          <section class="settings-table-card is-fill">
-            <div class="col-head">
-              <h3>全部批次</h3>
-              <div class="col-actions">
-                <el-select v-model="taskFilter" size="small" class="filter-item">
-                  <el-option label="全部状态" value="all" />
-                  <el-option label="进行中" value="running" />
-                  <el-option label="部分失败" value="partial_fail" />
-                  <el-option label="失败" value="failed" />
-                  <el-option label="还没测完" value="unobserved" />
-                  <el-option label="已取消" value="cancelled" />
-                  <el-option label="已通过" value="done" />
-                </el-select>
-                <el-select v-model="taskDeviceFilter" size="small" clearable placeholder="设备" class="filter-item">
-                  <el-option
-                    v-for="sn in taskDeviceOptions"
-                    :key="sn"
-                    :label="shortDeviceLabel(sn)"
-                    :value="sn"
-                  />
-                </el-select>
-                <el-select v-model="taskWhen" size="small" class="filter-item">
-                  <el-option label="全部时间" value="all" />
-                  <el-option label="今天" value="today" />
-                  <el-option label="近 7 天" value="week" />
-                </el-select>
-                <el-button size="small" :loading="loading" @click="loadTasks">刷新</el-button>
-                <el-button size="small" type="primary" @click="openNewRun">新建执行</el-button>
+          <div class="run-list-scroll">
+            <p v-if="!pagedTasks.length && !loading" class="run-list-empty">{{ taskEmptyText }}</p>
+            <button
+              v-for="row in pagedTasks"
+              :key="row.taskId"
+              type="button"
+              class="run-row"
+              :class="{ 'is-running': row.status === 'running' }"
+              @click="selectTask(row)"
+            >
+              <span class="mo-status-pill" :class="taskStatusPillClass(row)">{{ statusLabel(row.status, row) }}</span>
+              <div class="run-row-main">
+                <strong class="run-row-title">{{ taskTitle(row) }}</strong>
+                <span class="run-row-meta">
+                  {{ shortTaskId(row.taskId) }}
+                  <template v-if="formatTaskDevices(row)"> · {{ formatTaskDevices(row) }}</template>
+                  <template v-if="formatTaskTime(row) !== '—'"> · {{ formatTaskTime(row) }}</template>
+                  <template v-if="row.runType && row.runType !== 'manual'"> · {{ runTypeLabel(row.runType) }}</template>
+                </span>
               </div>
-            </div>
-            <div class="table-wrap">
-              <el-table
-                :data="pagedTasks"
-                border
-                stripe
-                size="small"
-                height="100%"
-                highlight-current-row
-                :row-class-name="taskTableRowClass"
-                :empty-text="taskEmptyText"
-                @row-click="selectTask"
-              >
-                <el-table-column label="状态" width="96">
-                  <template #default="{ row }">
-                    <el-tag :type="statusTagType(row.status, row)" size="small" effect="light">{{ statusLabel(row.status, row) }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="任务" min-width="180" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    <span class="task-name">{{ taskTitle(row) }}</span>
-                    <span v-if="row.runType && row.runType !== 'manual'" class="run-type">{{ runTypeLabel(row.runType) }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="编号" width="100" show-overflow-tooltip>
-                  <template #default="{ row }">{{ shortTaskId(row.taskId) }}</template>
-                </el-table-column>
-                <el-table-column label="进度" width="160">
-                  <template #default="{ row }">
-                    <div class="task-prog-cell">
-                      <el-progress
-                        :percentage="taskProgressPct(row)"
-                        :stroke-width="6"
-                        :show-text="false"
-                        :status="progressStatus(row)"
-                      />
-                      <span>{{ taskCountLabel(row) }}</span>
-                    </div>
-                  </template>
-                </el-table-column>
-                <el-table-column label="覆盖" width="72">
-                  <template #default="{ row }">
-                    {{ taskSns(row).length > 1 ? coverageLabel(taskCoverage(row)) : '—' }}
-                  </template>
-                </el-table-column>
-                <el-table-column label="设备" width="140" show-overflow-tooltip>
-                  <template #default="{ row }">{{ formatTaskDevices(row) || '—' }}</template>
-                </el-table-column>
-                <el-table-column label="时间" width="108">
-                  <template #default="{ row }">{{ formatTaskTime(row) }}</template>
-                </el-table-column>
-                <el-table-column label="操作" width="72" fixed="right">
-                  <template #default="{ row }">
-                    <el-button link type="primary" size="small" @click.stop="selectTask(row)">查看</el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
-            <el-pagination
-              class="settings-table-pager"
-              background
-              size="small"
-              layout="total, sizes, prev, pager, next"
-              :total="visibleTasks.length"
-              :page-sizes="TABLE_PAGE_SIZES"
-              v-model:page-size="taskPageSize"
-              v-model:current-page="taskPage"
-            />
-          </section>
+              <div class="run-row-progress">
+                <div class="run-row-bar" :class="progressStatus(row) || 'default'">
+                  <span :style="{ width: `${taskProgressPct(row)}%` }" />
+                </div>
+                <small>{{ taskCountLabel(row) }}</small>
+              </div>
+              <span class="run-row-chev" aria-hidden="true">›</span>
+            </button>
+          </div>
+          <el-pagination
+            class="settings-table-pager run-list-pager"
+            background
+            size="small"
+            layout="total, sizes, prev, pager, next"
+            :total="visibleTasks.length"
+            :page-sizes="TABLE_PAGE_SIZES"
+            v-model:page-size="taskPageSize"
+            v-model:current-page="taskPage"
+          />
         </div>
       </div>
 
@@ -1490,7 +1530,7 @@ watch(selectedCaseIds, () => {
         >
           <template #actions>
             <template v-if="hasCase">
-              <el-button @click="clearCase">返回任务</el-button>
+              <el-button size="small" @click="clearCase">返回任务</el-button>
             </template>
             <template v-else>
               <el-button @click="clearTask">返回批次</el-button>
@@ -1646,90 +1686,100 @@ watch(selectedCaseIds, () => {
       align-center
       class="new-run-dialog mo-fit-dialog"
     >
-      <div class="form new-run-form">
-        <div v-if="runConfiguredTargets.length" class="field">
-          <label>被测应用</label>
-          <div class="run-target-cards" role="list">
+      <div class="form new-run-form new-run-steps">
+        <section class="new-run-step">
+          <div class="new-run-step-head">
+            <span class="step-no">1</span>
+            <strong>被测应用</strong>
+          </div>
+          <div v-if="runConfiguredTargets.length" class="run-target-cards" role="list">
             <button
               v-for="row in runConfiguredTargets"
               :key="row.id"
               type="button"
               role="listitem"
-              class="run-target-card"
+              class="run-pick-card run-target-card"
               :class="{ on: runForm.env_surface === row.id }"
               @click="selectRunTarget(row)"
             >
-              <div class="run-target-card-head">
-                <strong>{{ channelTitle(row) }}</strong>
-                <code class="run-target-key">{{ channelSurfaceKey(row) }}</code>
-              </div>
-              <span class="run-target-meta">{{ channelKindText(row) }}</span>
-              <span class="run-target-val">{{ row.configuredValue }}</span>
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">{{ channelTitle(row) }} <code class="run-target-key">{{ channelSurfaceKey(row) }}</code></div>
+              <span class="pick-desc">{{ channelKindText(row) }} · {{ row.configuredValue }}</span>
             </button>
           </div>
-          <div class="hint">左右滑动选择。唯一键为 <code>channel.id</code>（多 Web / 国内国外用不同端 + 简称区分）；跑批带 <code>env_surface</code> 解析 URL / 包名。</div>
-        </div>
-        <div v-else-if="runEnvDoc" class="field">
-          <label>被测应用</label>
-          <div class="hint warn">当前运行环境下没有已填写的应用目标，请先在「配置 → 环境配置」填写包名或 Web 地址。</div>
-        </div>
-        <div v-else class="field">
-          <label>被测应用</label>
-          <div class="hint warn">未加载到项目环境，请先在「配置 → 环境配置」中维护环境列表。</div>
-        </div>
-        <div v-if="runEnvironments.length" class="field">
-          <label>运行环境</label>
-          <el-select v-model="runForm.env_profile" style="width:100%" teleported filterable>
-            <el-option
+          <div v-else-if="runEnvDoc" class="hint warn">当前运行环境下没有已填写的应用目标，请先在「配置 → 环境配置」填写包名或 Web 地址。</div>
+          <div v-else class="hint warn">未加载到项目环境，请先在「配置 → 环境配置」中维护环境列表。</div>
+        </section>
+
+        <section v-if="runEnvironments.length" class="new-run-step">
+          <div class="new-run-step-head">
+            <span class="step-no">2</span>
+            <strong>运行环境</strong>
+          </div>
+          <div class="run-target-cards" role="list">
+            <button
               v-for="e in runEnvironments"
               :key="e.key"
-              :label="e.label ? `${e.label} (${e.key})` : e.key"
-              :value="e.key"
-            />
-          </el-select>
-          <div class="hint">来自「配置 → 环境配置」；租号与密钥按所选环境读取。</div>
-        </div>
-        <div class="field">
-          <label>
-            设备（可多选；不选则由测试工程师按用例申请）
-            <template v-if="runTargetDeviceKind === 'web'"> · 仅浏览器</template>
-            <template v-else-if="runTargetDeviceKind === 'android'"> · 仅 Android</template>
-          </label>
-          <el-select
-            v-model="runForm.sns"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            placeholder="可不选，开跑后按用例占用设备"
-            style="width:100%"
-            filterable
-            teleported
-            popper-class="device-select-popper"
-          >
-            <el-option
+              type="button"
+              role="listitem"
+              class="run-pick-card run-target-card"
+              :class="{ on: runForm.env_profile === e.key }"
+              @click="selectRunEnvProfile(e.key)"
+            >
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">{{ e.label || e.key }} <code class="run-target-key">{{ e.key }}</code></div>
+              <span class="pick-desc">{{ e.label ? `标识 ${e.key}` : '运行环境' }}</span>
+            </button>
+          </div>
+        </section>
+
+        <section v-if="runEnvironments.length" class="new-run-step">
+          <div class="new-run-step-head">
+            <span class="step-no">3</span>
+            <strong>
+              设备
+              <template v-if="runTargetDeviceKind === 'web'">（浏览器）</template>
+              <template v-else-if="runTargetDeviceKind === 'android'">（Android）</template>
+            </strong>
+          </div>
+          <div v-if="runFilteredDevices.length" class="run-target-cards" role="list">
+            <button
+              type="button"
+              role="listitem"
+              class="run-pick-card run-target-card"
+              :class="{ on: !runForm.sns?.length }"
+              @click="clearRunDevices"
+            >
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">暂不指定</div>
+              <span class="pick-desc">开跑后按用例占用设备</span>
+            </button>
+            <button
               v-for="d in runFilteredDevices"
               :key="d.sn"
-              :label="formatDeviceTag(d)"
-              :value="d.sn"
+              type="button"
+              role="listitem"
+              class="run-pick-card run-target-card"
+              :class="{ on: isRunDeviceSelected(d.sn), 'is-disabled': deviceOptionDisabled(d) }"
               :disabled="deviceOptionDisabled(d)"
+              @click="toggleRunDevice(d)"
             >
-              <div class="dev-opt">
-                <span class="dev-name">{{ formatDeviceTag(d) }}</span>
-                <small>
-                  {{ formatDeviceMeta(d) }}
-                  <template v-if="isWebSlotDevice(d)"> · {{ formatWebParallelUsage(d) }}<template v-if="deviceWebParallelFull(d)"> · 已满</template></template>
-                  <template v-else-if="deviceRunBlockedByBusy(d)"> · 占用中 {{ shortTaskId(d.busy_task_id) }}</template>
-                  <template v-else-if="d.reserved_slot_id"> · 排期占用 {{ d.reserved_title || '其他窗口' }}</template>
-                </small>
-              </div>
-            </el-option>
-          </el-select>
-          <div v-if="!runFilteredDevices.length" class="hint warn">
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">{{ formatDeviceTag(d) }}</div>
+              <span class="pick-desc">
+                {{ formatDeviceMeta(d) }}
+                <template v-if="isWebSlotDevice(d)"> · {{ formatWebParallelUsage(d) }}<template v-if="deviceWebParallelFull(d)"> · 已满</template></template>
+                <template v-else-if="deviceRunBlockedByBusy(d)"> · 占用中 {{ shortTaskId(d.busy_task_id) }}</template>
+                <template v-else-if="d.reserved_slot_id"> · 排期占用 {{ d.reserved_title || '其他窗口' }}</template>
+              </span>
+            </button>
+          </div>
+          <div v-else class="hint warn">
             <template v-if="runTargetDeviceKind === 'web'">暂无在线浏览器节点</template>
             <template v-else-if="runTargetDeviceKind === 'android'">暂无在线 Android 设备</template>
             <template v-else>暂无在线设备</template>
           </div>
-          <div v-else-if="busySelectedDevice" class="hint warn">
+          <div v-if="busySelectedDevice" class="hint warn">
             <template v-if="deviceWebParallelFull(busySelectedDevice)">
               {{ formatDeviceTag(busySelectedDevice) }} 浏览器并行已满（{{ formatWebParallelUsage(busySelectedDevice) }}），请等待一路结束或换节点。
             </template>
@@ -1740,84 +1790,80 @@ watch(selectedCaseIds, () => {
           <div v-else-if="reservedSelectedDevice" class="hint warn">
             {{ formatDeviceTag(reservedSelectedDevice) }} 当前被排期占用（{{ reservedSelectedDevice.reserved_title || '其他窗口' }}），请换一台或等窗口结束。
           </div>
-          <div v-else-if="selectedDevices.length" class="hint">
+          <div v-else-if="selectedDevices.length > 1" class="hint">
             已选 {{ selectedDevices.length }} 台 · {{ selectedDevices.map((d) => formatDeviceMeta(d)).join('；') }}
             <template v-if="mixedSelectedPlatforms">。每台按项目环境里对应的包名 / Bundle 执行</template>
           </div>
-          <div v-else class="hint">可不选设备</div>
-        </div>
-        <div v-if="showCoveragePick" class="field">
-          <label>覆盖方式</label>
+        </section>
+
+        <section v-if="showCoveragePick" class="new-run-step">
+          <div class="new-run-step-head">
+            <span class="step-no">4</span>
+            <strong>覆盖方式</strong>
+          </div>
           <div class="coverage-pick">
             <button
               type="button"
-              class="coverage-card"
+              class="run-pick-card coverage-card"
               :class="{ on: runForm.coverage === 'once' }"
               @click="runForm.coverage = 'once'"
             >
-              <strong>加速拆分</strong>
-              <span>用例轮询分到各台设备，多台同时执行（每条只跑一次）</span>
-              <em>{{ selectedCaseIds.length ? `${selectedCaseIds.length} 次执行` : '先勾选用例' }}</em>
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">加速拆分</div>
+              <span class="pick-desc">用例轮询分到各台设备，多台同时执行（每条只跑一次）</span>
             </button>
             <button
               type="button"
-              class="coverage-card"
+              class="run-pick-card coverage-card"
               :class="{ on: runForm.coverage === 'per_device' }"
               @click="runForm.coverage = 'per_device'"
             >
-              <strong>全机覆盖</strong>
-              <span>每台设备都把这批用例跑完</span>
-              <em>{{ selectedCaseIds.length ? `${(selectedCaseIds.length || 0) * runForm.sns.length} 次执行` : '先勾选用例' }}</em>
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">全机覆盖</div>
+              <span class="pick-desc">每台设备都把这批用例跑完</span>
             </button>
           </div>
-          <div class="hint">
-            <template v-if="unitCount && runForm.sns.length">将执行 {{ unitCount }} 次 · 占用 {{ runForm.sns.length }} 台直到任务结束</template>
-            <template v-else-if="unitCount">将执行 {{ unitCount }} 次 · 设备由开跑后申请</template>
-            <template v-else>勾选用例后显示执行次数 · {{ runForm.sns.length ? `已选 ${runForm.sns.length} 台` : '可不选设备' }}</template>
+        </section>
+
+        <section class="new-run-step">
+          <div class="new-run-step-head">
+            <span class="step-no">{{ showCoveragePick ? 5 : 4 }}</span>
+            <strong>执行方案</strong>
           </div>
-        </div>
-        <div class="field">
-          <label>执行方案</label>
           <div class="run-target-cards" role="list">
             <button
               type="button"
               role="listitem"
-              class="run-target-card"
+              class="run-pick-card run-target-card"
               :class="{ on: runForm.action_scheme !== 'dom' }"
               @click="runForm.action_scheme = 'visual'"
             >
-              <div class="run-target-card-head">
-                <strong>看图</strong>
-                <code class="run-target-key">visual</code>
-              </div>
-              <span class="run-target-meta">纯视觉</span>
-              <span class="run-target-val">只按模型坐标点、输入、滑动</span>
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">看图 <code class="run-target-key">visual</code></div>
+              <span class="pick-desc">纯视觉 · 按模型坐标点、输入、滑动</span>
             </button>
             <button
               type="button"
               role="listitem"
-              class="run-target-card"
+              class="run-pick-card run-target-card"
               :class="{ on: runForm.action_scheme === 'dom' }"
               @click="runForm.action_scheme = 'dom'"
             >
-              <div class="run-target-card-head">
-                <strong>DOM</strong>
-                <code class="run-target-key">dom</code>
-              </div>
-              <span class="run-target-meta">纯层级</span>
-              <span class="run-target-val">只按节点点，点不上不改走看图</span>
+              <span class="pick-check" aria-hidden="true">✓</span>
+              <div class="pick-title">DOM <code class="run-target-key">dom</code></div>
+              <span class="pick-desc">纯层级 · 只按节点点，点不上不改走看图</span>
             </button>
           </div>
-        </div>
-        <div class="field">
           <div class="hint model-hint">将使用：{{ caseExecutionModelLabel }}</div>
-          <div v-if="runSeed?.envProfile" class="hint">
-            环境：{{ envLabel(runSeed.envProfile) }}
+        </section>
+
+        <section class="new-run-step field-cases-grow">
+          <div class="new-run-step-head">
+            <span class="step-no">{{ showCoveragePick ? 6 : 5 }}</span>
+            <strong>勾选用例</strong>
           </div>
-        </div>
-        <div class="field field-cases-grow">
           <div class="case-head">
-            <label>按模块勾选用例{{ selectedCaseIds.length ? ` · 已选 ${selectedCaseIds.length}` : '' }}</label>
+            <label>按模块选择</label>
             <span class="case-head-actions">
               <el-button size="small" text @click="selectAllVisibleCases">全选当前列表</el-button>
               <el-button size="small" text :disabled="!selectedCaseIds.length" @click="clearSelectedCases">清空</el-button>
@@ -1845,21 +1891,26 @@ watch(selectedCaseIds, () => {
             <el-empty v-else-if="!cases.length && !casesLoading" description="暂无用例" :image-size="50" />
             <p v-else-if="caseQuery && !filteredCases.length" class="hint">没有匹配的用例</p>
           </div>
-        </div>
         <p v-if="platformConflictCases.length" class="hint">
           {{ platformConflictCases.length }} 条用例标注了另一平台，仍会在当前设备上执行。
           该端做不到的前置会标「无法执行」并跳过，只有真实检查没过才停跑：
           {{ platformConflictCases.map((c) => c.case_id).slice(0, 4).join('、') }}{{ platformConflictCases.length > 4 ? '…' : '' }}
         </p>
-        <div class="field opts">
-          <el-checkbox v-model="runForm.use_persisted_baseline">沿用上次成功路径</el-checkbox>
-        </div>
+          <div class="field opts">
+            <el-checkbox v-model="runForm.use_persisted_baseline">沿用上次成功路径</el-checkbox>
+          </div>
+        </section>
       </div>
       <template #footer>
-        <el-button @click="newRunVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="!canStartRun" @click="submitRun">
-          {{ unitCount ? (runForm.sns.length ? `开始 · ${unitCount} 次执行` : `开始 · ${unitCount} 条 · 技能申请设备`) : '启动' }}
-        </el-button>
+        <div class="new-run-footer-bar">
+          <span class="picked">已选 {{ selectedCaseIds.length }} 条用例</span>
+          <div>
+            <el-button @click="newRunVisible = false">取消</el-button>
+            <el-button type="primary" :loading="submitting" :disabled="!canStartRun" @click="submitRun">
+              {{ unitCount ? (runForm.sns.length ? `启动 · ${unitCount} 次` : `启动 · ${unitCount} 条`) : '启动' }}
+            </el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -2085,6 +2136,12 @@ watch(selectedCaseIds, () => {
   padding: 0 !important;
   background: var(--mo-card);
 }
+.runs-page-shell {
+  border: none !important;
+  background: transparent !important;
+  padding: 16px 20px 12px !important;
+  box-shadow: none !important;
+}
 .task-detail-page :deep(.pane) {
   height: 100%;
   min-height: 0;
@@ -2238,6 +2295,11 @@ watch(selectedCaseIds, () => {
   border-color: var(--mo-primary);
   background: var(--mo-primary-soft);
   box-shadow: 0 0 0 1px var(--mo-primary);
+}
+.run-target-card.is-disabled,
+.run-target-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .run-target-card-head {
   display: flex;

@@ -10,6 +10,7 @@ const props = defineProps({
   sessionId: { type: String, default: '' },
   turn: { type: Number, default: null },
   live: { type: Boolean, default: false },
+  embedded: { type: Boolean, default: false },
 })
 
 const NOISE = new Set([
@@ -328,8 +329,8 @@ onUnmounted(stopPoll)
 </script>
 
 <template>
-  <section class="cer" v-loading="loading">
-    <header class="cer-head">
+  <section class="cer" :class="{ 'is-embedded': embedded }" v-loading="loading">
+    <header v-if="!embedded" class="cer-head">
       <div class="cer-title">
         <h3>{{ headline }}</h3>
         <p>{{ subline }}</p>
@@ -419,6 +420,11 @@ onUnmounted(stopPoll)
   border: 1px solid var(--mo-border, #e3e8f0);
   border-radius: 12px;
   overflow: hidden;
+}
+.cer.is-embedded {
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 .cer-head {
   display: flex;

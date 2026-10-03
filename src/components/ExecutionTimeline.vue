@@ -47,7 +47,10 @@ const props = defineProps({
   envLabel: { type: String, default: '' },
   envAlign: { type: Object, default: null },
   platform: { type: String, default: '' },
+  layout: { type: String, default: 'stack' }, // stack | case
 })
+
+const isCaseLayout = computed(() => props.layout === 'case')
 
 const emit = defineEmits(['select-step'])
 
@@ -70,9 +73,14 @@ const envelopeSkillId = ref('')
 const envelopeViewId = ref('')
 const envelopeSlots = ref(null)
 
+function hasStep(v) {
+  return v != null && v !== '' && Number.isFinite(Number(v))
+}
+
 function isValidThumb(t) {
   if (!t || typeof t !== 'string') return false
   const s = t.trim()
+  if (s.includes('(+')) return false
   if (s.startsWith('data:image/')) return s.length > 64
   if (s.startsWith('/static/')) return true
   if (s.startsWith('http://') || s.startsWith('https://')) return true
@@ -222,7 +230,7 @@ function applyAgentEvent(d) {
       ...(d.menu_flags ? { menu_flags: d.menu_flags } : {}),
       ...(Array.isArray(d.inspections) && d.inspections.length ? { inspections: d.inspections } : {}),
     })
-    if (d.step) activeStep.value = d.step
+    if (hasStep(d.step)) activeStep.value = d.step
   }
   else if (d.phase === 'act') {
     const action = typeof d.action === 'string'
@@ -240,7 +248,7 @@ function applyAgentEvent(d) {
       ...(knowledge ? { knowledge } : {}),
       ...(d.lane ? { lane: d.lane } : {}),
     })
-    if (d.step) activeStep.value = d.step
+    if (hasStep(d.step)) activeStep.value = d.step
   }
   else if (d.phase === 'step') {
     const stepSt = d.status === 'continue' ? 'dispatching' : d.status
@@ -271,6 +279,11 @@ function applyAgentEvent(d) {
     })
     activeStep.value = d.step
   }
+  else if (d.phase === 'thumb') {
+    if (hasStep(d.step) && d.result_thumb) {
+      upsert(d.step, { result_thumb: normalizeThumb(d.result_thumb) })
+    }
+  }
   else if (d.phase === 'result') {
     const settled = settleStatus(d.result_status || d.status)
     upsert(d.step, {
@@ -279,6 +292,7 @@ function applyAgentEvent(d) {
       summary: d.summary,
       elapsed: d.elapsed_ms || d.elapsed,
       ...(d.thumb ? { thumb: normalizeThumb(d.thumb) } : {}),
+      ...(d.result_thumb ? { result_thumb: normalizeThumb(d.result_thumb) } : {}),
       ...(d.capability_id ? { cap: d.capability_id } : {}),
       ...(knowledge ? { knowledge } : {}),
       ...(d.lane ? { lane: d.lane } : {}),
@@ -286,7 +300,7 @@ function applyAgentEvent(d) {
       ...(d.execution_kind ? { execution_kind: d.execution_kind } : {}),
       ...(d.execution_kind === 'guard_skip' ? { guard_skip: true } : {}),
     })
-    if (d.step) activeStep.value = d.step
+    if (hasStep(d.step)) activeStep.value = d.step
   }
   else if (d.phase === 'resource') {
     const rt = d.resource_transition && typeof d.resource_transition === 'object' ? d.resource_transition : {}
@@ -324,7 +338,7 @@ function applyAgentEvent(d) {
     if (d.failure_label) failureLabel.value = d.failure_label
     if (d.failure_category) failureCategory.value = d.failure_category
   }
-  if (d.step) upsert(d.step, phaseFields(d))
+  if (hasStep(d.step)) upsert(d.step, phaseFields(d))
 }
 
 function applyPlanEvents(evs) {
@@ -440,8 +454,9 @@ async function backfill(runId) {
       const engine = extractEngineSteps(props.caseSpec || d)
       applyPlanEvents(engine.length ? engine : (Array.isArray(evs) ? evs : []))
     } else {
-      (evs || []).forEach((e, i) => {
-        const stepNo = Number(e.seq ?? i + 1)
+      (evs || []).forEach((e) => {
+        if (e?.phase != null || e?.seq == null || e.seq === '' || !e.capability_id) return
+        const stepNo = Number(e.seq)
         const s = steps.value.find((x) => Number(x.step) === stepNo)
         const thumb = normalizeThumb(e.thumb || e.screenshot_thumb || '')
         const elapsed = resolveElapsed(e)
@@ -781,6 +796,54 @@ const lastFailThumb = computed(() => {
   return any?.thumb || ''
 })
 const stepsOpen = ref(true)
+watch(isCaseLayout, (on) => {
+  if (on) {
+    verdictOpen.value = true
+    filmOpen.value = true
+    stepsOpen.value = true
+  }
+}, { immediate: true })
+
+function stepRangeLabel(task) {
+  const nos = (task?.cardNos || []).map((n) => Number(n)).filter((n) => Number.isFinite(n))
+  if (!nos.length) return ''
+  const min = Math.min(...nos)
+  const max = Math.max(...nos)
+  return min === max ? `步骤 #${min}` : `步骤 #${min}~#${max}`
+}
+
+function phaseGroupMeta(g) {
+  const tasks = g?.tasks || []
+  const done = tasks.filter((t) => t.status === 'done' || t.status === 'pass').length
+  const fail = tasks.some((t) => t.status === 'fail')
+  const total = tasks.filter((t) => !t.skip).length
+  return { done, total, fail }
+}
+
+const failCompare = computed(() => {
+  const step = failStepNo.value
+    ? steps.value.find((x) => x.step === failStepNo.value)
+    : null
+  if (!step) return null
+  const inspections = Array.isArray(step.inspections) ? step.inspections : []
+  for (const row of inspections) {
+    const exp = row?.expected ?? row?.expect ?? row?.want
+    const act = row?.actual ?? row?.got ?? row?.value
+    if (exp != null || act != null) {
+      return {
+        step: step.step,
+        expected: String(exp ?? '—'),
+        actual: String(act ?? '—'),
+      }
+    }
+  }
+  const summary = String(step.summary || '').trim()
+  if (summary && summary.includes('预期')) {
+    const parts = summary.split(/实际|但|，/)
+    return { step: step.step, expected: parts[0] || summary, actual: parts.slice(1).join('，') || '—' }
+  }
+  return null
+})
 
 // 统一：单条步骤详情页抽屉（包含系统预筛/恢复规则/知识命中）
 const stepDrawerOpen = ref(false)
@@ -845,6 +908,16 @@ function openStepDetailDrawer(stepNo, focusUid = '') {
   stepDrawerOpen.value = true
 }
 
+watch(
+  () => [isCaseLayout.value, steps.value.length, failStepNo.value],
+  () => {
+    if (!isCaseLayout.value || !steps.value.length) return
+    if (stepDrawerOpen.value && stepDrawerStepNo.value != null) return
+    const pick = failStepNo.value || steps.value[0]?.step
+    if (pick) openStepDetailDrawer(pick)
+  },
+)
+
 const jumpToFail = () => {
   if (failStepNo.value) openStepDetailDrawer(failStepNo.value)
 }
@@ -880,7 +953,8 @@ defineExpose({ goal, overall, finished })
 </script>
 
 <template>
-  <div class="et-wrap">
+  <div class="et-wrap" :class="{ 'is-case-layout': isCaseLayout }">
+    <div :class="isCaseLayout ? 'et-case-main' : undefined">
     <div v-if="checkpointCatalog.length && !hasExpected" class="et-cps">
       <span class="et-cps-label">检查点</span>
       <ol>
@@ -888,7 +962,7 @@ defineExpose({ goal, overall, finished })
       </ol>
     </div>
 
-    <div v-if="showVerdict" class="et-fold" :class="[isLimit ? 'limit' : verdictTone, { open: verdictOpen }]">
+    <div v-if="showVerdict" class="et-fold" :class="[isLimit ? 'limit' : verdictTone, { open: verdictOpen || isCaseLayout, 'et-verdict-hero': isCaseLayout }]">
       <div class="et-log-head">
         <button type="button" class="et-fold-toggle" @click="verdictOpen = !verdictOpen">
           <span class="et-log-head-l">
@@ -899,7 +973,7 @@ defineExpose({ goal, overall, finished })
         </button>
         <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
       </div>
-      <div v-show="verdictOpen" class="et-verdict" :class="isLimit ? 'limit' : verdictTone">
+      <div v-show="verdictOpen || isCaseLayout" class="et-verdict" :class="isLimit ? 'limit' : verdictTone">
         <div v-if="lastFailThumb && statusClass(overall) === 'bad'" class="et-verdict-shot" @click="openStepDetailDrawer(failStepNo)">
           <img :src="thumbSrc(lastFailThumb)" alt="" />
         </div>
@@ -914,19 +988,39 @@ defineExpose({ goal, overall, finished })
             >{{ g.tag }}</span>
             <span v-if="isLimit" class="et-limit-pill">时间上限</span>
             <span v-if="totalMs > 0" class="et-verdict-ms">合计 {{ fmtDuration(totalMs) }}</span>
-            <button v-if="failStepNo" type="button" class="et-jump" @click="jumpToFail">跳到失败步 #{{ failStepNo }}</button>
           </div>
           <p class="et-verdict-body">{{ verdictText || (finished || !props.live ? '本用例已结束，详见下方时间线。' : '正在执行，步骤会实时出现在下方。') }}</p>
+          <p v-if="failCompare && isCaseLayout" class="et-verdict-hint">预期 / 实际对比见右侧步骤详情</p>
         </div>
       </div>
     </div>
 
-    <div v-if="runId || steps.length" class="et-fold" :class="{ open: filmOpen }">
+    <div v-if="showThreeColumn && (runId || steps.length)" class="et-phase-board">
+      <div v-for="g in runGroups" :key="g.id" class="et-phase-col">
+        <header class="et-phase-col-head">
+          <span>{{ g.label }}</span>
+          <small>{{ phaseGroupMeta(g).done }}/{{ phaseGroupMeta(g).total }} · {{ phaseGroupMeta(g).fail ? '失败' : (phaseGroupMeta(g).done === phaseGroupMeta(g).total && phaseGroupMeta(g).total ? '通过' : '进行中') }}</small>
+        </header>
+        <button
+          v-for="task in g.tasks"
+          :key="task.id"
+          type="button"
+          class="et-phase-item"
+          :class="{ 'is-fail': task.status === 'fail' }"
+          @click="task.cardNos?.length && openStepDetailDrawer(task.cardNos[0])"
+        >
+          <span class="phase-title">{{ task.title }}</span>
+          <span v-if="stepRangeLabel(task)" class="phase-steps">{{ stepRangeLabel(task) }}</span>
+        </button>
+      </div>
+    </div>
+
+    <div v-if="runId || steps.length" class="et-fold" :class="{ open: filmOpen || isCaseLayout, 'is-flat': isCaseLayout }">
       <button type="button" class="et-log-head" @click="filmOpen = !filmOpen">
         <span class="et-log-head-l">时间线</span>
         <span>{{ filmOpen ? '收起' : (steps.length ? `展开 ${nodeCols.length} 步` : '展开') }}</span>
       </button>
-      <div v-show="filmOpen" class="film-body">
+      <div v-show="filmOpen || isCaseLayout" class="film-body">
       <p v-if="steps.length" class="film-total">按执行顺序 · 条宽≈耗时 · 共 {{ nodeCols.length }} 步</p>
       <div v-if="!steps.length" class="film-empty">暂无步骤时间线</div>
       <template v-else>
@@ -987,7 +1081,7 @@ defineExpose({ goal, overall, finished })
       </div>
     </div>
 
-    <section v-if="runId || steps.length || hasRunTree" class="et-log-block" :class="{ open: stepsOpen }">
+    <section v-if="(runId || steps.length || hasRunTree) && (!isCaseLayout || !showThreeColumn)" class="et-log-block" :class="{ open: stepsOpen }">
       <button type="button" class="et-log-head" @click="stepsOpen = !stepsOpen">
         <span class="et-log-head-l">
           {{ treeTitle }}
@@ -1039,12 +1133,21 @@ defineExpose({ goal, overall, finished })
                     v-if="isValidThumb(s.thumb)"
                     type="button"
                     class="et-thumb-btn"
-                    title="点击放大"
+                    title="决策画面"
                     @click="onStepThumbClick(s, $event)"
                   >
                     <img :src="thumbSrc(s.thumb)" class="et-thumb" alt="" />
                   </button>
-                  <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
+                  <button
+                    v-if="isValidThumb(s.result_thumb)"
+                    type="button"
+                    class="et-thumb-btn"
+                    title="操作后画面"
+                    @click="onStepThumbClick({ ...s, thumb: s.result_thumb }, $event)"
+                  >
+                    <img :src="thumbSrc(s.result_thumb)" class="et-thumb" alt="" />
+                  </button>
+                  <div v-if="!isValidThumb(s.thumb) && !isValidThumb(s.result_thumb)" class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
                   <div class="et-body">
                     <div class="et-head">
                       <span v-if="s.execution_kind === 'guard_skip' || s.guard_skip" class="et-badge warn">{{ statusText('guard_skip') }}</span>
@@ -1115,12 +1218,21 @@ defineExpose({ goal, overall, finished })
               v-if="isValidThumb(s.thumb)"
               type="button"
               class="et-thumb-btn"
-              title="点击放大"
+              title="决策画面"
               @click="onStepThumbClick(s, $event)"
             >
               <img :src="thumbSrc(s.thumb)" class="et-thumb" alt="" />
             </button>
-            <div v-else class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
+            <button
+              v-if="isValidThumb(s.result_thumb)"
+              type="button"
+              class="et-thumb-btn"
+              title="操作后画面"
+              @click="onStepThumbClick({ ...s, thumb: s.result_thumb }, $event)"
+            >
+              <img :src="thumbSrc(s.result_thumb)" class="et-thumb" alt="" />
+            </button>
+            <div v-if="!isValidThumb(s.thumb) && !isValidThumb(s.result_thumb)" class="et-thumb placeholder" title="该步骤无可用截图">无截图</div>
             <div class="et-body">
               <div class="et-head">
                 <span v-if="s.execution_kind === 'guard_skip' || s.guard_skip" class="et-badge warn">{{ statusText('guard_skip') }}</span>
@@ -1175,11 +1287,30 @@ defineExpose({ goal, overall, finished })
         </template>
       </div>
     </section>
+    </div>
+
+    <aside v-if="isCaseLayout" class="et-case-rail">
+      <ExecutionStepDetailDrawer
+        v-model="stepDrawerOpen"
+        mode="panel"
+        :step="drawerStep"
+        :steps="steps"
+        :focus-uid="stepDrawerFocusUid"
+        :has-shot="inspectReady"
+        :checkpoint-catalog="checkpointCatalog"
+        :session-id="runId"
+        :live="props.live"
+        :fail-compare="failCompare"
+        @focus="(uid) => { stepDrawerFocusUid = uid }"
+        @pick-step="openStepDetailDrawer"
+      />
+    </aside>
 
     <ExecutionStepDetailDrawer
+      v-if="!isCaseLayout"
       v-model="stepDrawerOpen"
       :step="drawerStep"
-      :focusUid="stepDrawerFocusUid"
+      :focus-uid="stepDrawerFocusUid"
       :has-shot="inspectReady"
       :checkpoint-catalog="checkpointCatalog"
       @focus="(uid) => { stepDrawerFocusUid = uid }"
@@ -1187,7 +1318,7 @@ defineExpose({ goal, overall, finished })
 
     <Teleport to="body">
       <div
-        v-if="stepDrawerOpen && inspectReady"
+        v-if="!isCaseLayout && stepDrawerOpen && inspectReady"
         class="et-inspect"
         @click.self="closeStepDrawer"
       >
@@ -1211,7 +1342,50 @@ defineExpose({ goal, overall, finished })
 <style scoped>
 
 
-.et-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; gap: 10px; box-sizing: border-box; overflow: hidden; }
+.et-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  gap: 10px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.et-wrap.is-case-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 36%);
+  gap: 12px;
+  align-items: stretch;
+  width: 100%;
+}
+.et-wrap.is-case-layout > .et-case-rail {
+  width: 100%;
+}
+.et-case-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 10px;
+  overflow: hidden;
+}
+.et-case-rail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+@media (max-width: 1100px) {
+  .et-wrap.is-case-layout {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .et-case-rail {
+    max-height: min(48vh, 520px);
+  }
+}
 .et-fold {
   flex: 0 0 auto;
   min-width: 0;

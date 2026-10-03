@@ -96,4 +96,6 @@ export const FLAG_LABELS = {
   empty_steps: '步骤为空',
   empty_expected: '预期为空',
   likely_duplicate: '与库中已有用例同名',
+  ui_not_coverable: '无法 UI 自动化',
+  step_key_issues: '步骤密钥待补',
 }

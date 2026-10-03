@@ -165,7 +165,42 @@ const localVersionMismatch = computed(() => {
   return Boolean(installed && reported && installed !== reported)
 })
 
-const rowOnline = (row) => Boolean(row?.status === 'online' || row?.online || row?.alive)
+const rowOnline = (row) => Boolean(
+  row?.status !== 'offline' && (row?.status === 'online' || row?.status === 'asleep' || row?.online || row?.alive),
+)
+
+const rowStatusText = (row) => {
+  if (!rowOnline(row)) return '离线'
+  if (row?.status === 'asleep' || row?.host?.mode === 'asleep') return '已休眠'
+  return '在线'
+}
+
+const rowStatusType = (row) => {
+  if (rowStatusText(row) === '已休眠') return 'warning'
+  return rowOnline(row) ? 'success' : 'info'
+}
+
+const hostNotCharging = (row) => {
+  const host = row?.host || {}
+  return host.power_source === 'ac' && host.charging === 'not charging'
+}
+
+const hostPowerText = (row) => {
+  const host = row?.host
+  if (!host || typeof host !== 'object') return ''
+  const src = host.power_source === 'ac' ? '插电' : (host.power_source === 'battery' ? '电池' : '')
+  const charge = {
+    charging: '充电中',
+    'not charging': '未充电',
+    charged: '已充满',
+    discharging: '放电',
+  }[host.charging] || ''
+  const cpu = host.cpu_percent == null ? '' : `CPU ${host.cpu_percent}%`
+  const rss = host.rss_mb == null ? '' : `${host.rss_mb}MB`
+  const chromium = host.children && host.children.Chromium != null ? `Chromium ${host.children.Chromium}` : ''
+  const inhibit = host.inhibit ? '屏幕常亮' : ''
+  return [src, charge, inhibit, cpu, rss, chromium].filter(Boolean).join(' · ') || '—'
+}
 
 const isAndroidDevice = (d) => {
   const t = String(d?.type || d?.platform || '').toLowerCase()
@@ -660,8 +695,25 @@ const runLocal = async (kind) => {
   }
 }
 
+const markRemoteMode = (row, mode) => {
+  const id = String(row?.node_id || row?.scout_id || '')
+  if (!id) return
+  nodes.value = nodes.value.map((n) => {
+    if (String(n.node_id || n.scout_id || '') !== id) return n
+    return {
+      ...n,
+      host: { ...(n.host || {}), mode },
+      status: mode === 'asleep' ? 'asleep' : 'online',
+      online: true,
+      alive: true,
+    }
+  })
+}
+
 const runRemote = async (row, command) => {
   busyId.value = `${row.node_id}:${command}`
+  if (command === 'sleep') markRemoteMode(row, 'asleep')
+  if (command === 'wake') markRemoteMode(row, 'running')
   const nodeKey = remoteCommandId(row)
   let pollTimer = null
   if (command === 'update' && nodeKey) {
@@ -701,6 +753,9 @@ const runRemote = async (row, command) => {
     await refreshNodes()
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '下发失败')
+    if (command === 'sleep' || command === 'wake') {
+      try { await refreshNodes() } catch { /* 失败时收回刚才的乐观状态 */ }
+    }
   } finally {
     if (pollTimer) clearInterval(pollTimer)
     if (command === 'update' && nodeKey) {
@@ -736,7 +791,11 @@ const act = async (row, command) => {
   }
   if (command === 'start') {
     if (!rowActions(row).local) {
-      ElMessage.warning('离线专机无法远程启动')
+      if (rowActions(row).asleep) {
+        await runRemote(row, 'wake')
+        return
+      }
+      ElMessage.warning('离线专机无法远程启动。到这台电脑执行 mino-scout start')
       return
     }
     await runLocal('start')
@@ -746,6 +805,10 @@ const act = async (row, command) => {
   const online = row?.status === 'online' || row?.online || row?.alive
   const nodeId = row?.node_id || row?.scout_id
   if (online && nodeId && nodeId !== 'local') {
+    if (command === 'stop' && !rowActions(row).local) {
+      await runRemote(row, 'sleep')
+      return
+    }
     await runRemote(row, command)
     // 本机再清 launchd / 冻结服务；restart 由 Scout 自拉起，不再 IPC restart
     if (command === 'stop' && rowActions(row).local && isElectron.value) {
@@ -1286,8 +1349,8 @@ onUnmounted(() => {
         </el-table-column>
         <el-table-column label="状态" width="80">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.status === 'online' || row.online ? 'success' : 'info'" effect="light">
-              {{ row.status === 'online' || row.online ? '在线' : '离线' }}
+            <el-tag size="small" :type="rowStatusType(row)" effect="light">
+              {{ rowStatusText(row) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -1312,6 +1375,14 @@ onUnmounted(() => {
         </el-table-column>
         <el-table-column label="心跳" width="100">
           <template #default="{ row }">{{ heartbeatText(row) || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="功耗" min-width="220">
+          <template #default="{ row }">
+            <span v-if="rowOnline(row) && row.host" :class="{ 'text-warn': hostNotCharging(row) }">
+              {{ hostPowerText(row) }}
+            </span>
+            <span v-else>—</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" min-width="380" width="380" fixed="right">
           <template #default="{ row }">
@@ -1342,7 +1413,7 @@ onUnmounted(() => {
                 class="settings-action-pill op-pill"
                 :disabled="!rowActions(row).stop.enabled || stopping || restarting || remoteBusy"
                 @click="act(row, 'stop')"
-              >停止</button>
+              >休眠</button>
               <button
                 v-if="rowActions(row).restart.visible"
                 type="button"
@@ -1350,6 +1421,14 @@ onUnmounted(() => {
                 :disabled="!rowActions(row).restart.enabled || starting || stopping || restarting || remoteBusy"
                 @click="act(row, 'restart')"
               >重启</button>
+              <button
+                v-if="rowActions(row).start.visible"
+                type="button"
+                class="settings-action-pill op-pill"
+                :disabled="!rowActions(row).start.enabled || remoteBusy"
+                @click="act(row, 'start')"
+              >启动</button>
+              <span v-if="!rowOnline(row) && !rowActions(row).local" class="scout-offline-hint">本机执行 mino-scout start</span>
             </div>
           </template>
         </el-table-column>
